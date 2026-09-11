@@ -1,0 +1,22 @@
+# Backend
+fastapi>=0.115
+uvicorn[standard]>=0.32
+
+# Frontend MVP
+streamlit>=1.40
+
+# Scraping
+httpx>=0.27
+playwright>=1.48
+beautifulsoup4>=4.12
+
+# Scheduler
+apscheduler>=3.10
+
+# Utils
+python-dotenv>=1.0
+pydantic>=2.9
+
+# Test
+pytest>=8.0
+pytest-mock>=3.14
