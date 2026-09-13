@@ -1,22 +1,80 @@
+# Version CỐ ĐỊNH (không phải `>=`) — sinh bằng `pip freeze` từ 1 venv sạch
+# (chỉ cài từ file này, test pass đầy đủ) để cài lại ở máy khác ra đúng y hệt
+# version, không lệch do cài bản mới nhất tại thời điểm khác nhau. Muốn nâng
+# version, cài thủ công rồi chạy lại `pip freeze > requirements.txt` từ venv
+# sạch — không sửa tay số version ở đây.
+
 # Backend
-fastapi>=0.115
-uvicorn[standard]>=0.32
+fastapi==0.141.1
+uvicorn[standard]==0.52.4
 
 # Frontend MVP
-streamlit>=1.40
+streamlit==1.63.0
 
 # Scraping
-httpx>=0.27
-playwright>=1.48
-beautifulsoup4>=4.12
+httpx==0.28.1
+playwright==1.62.0
+beautifulsoup4==4.15.0
 
 # Scheduler
-apscheduler>=3.10
+APScheduler==3.11.3
 
 # Utils
-python-dotenv>=1.0
-pydantic>=2.9
+python-dotenv==1.2.3
+pydantic==2.13.5
 
 # Test
-pytest>=8.0
-pytest-mock>=3.14
+pytest==9.1.1
+pytest-mock==3.15.1
+
+# --- Transitive dependencies (pin theo pip freeze, giữ nguyên để đảm bảo tái tạo đúng) ---
+altair==6.2.2
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.15.1
+attrs==26.1.0
+certifi==2026.7.22
+charset-normalizer==3.5.1
+click==8.5.0
+colorama==0.4.6
+greenlet==3.5.5
+h11==0.16.0
+httpcore==1.0.9
+httptools==0.8.0
+idna==3.19
+iniconfig==2.3.0
+itsdangerous==2.2.0
+Jinja2==3.1.6
+jsonschema==4.26.0
+jsonschema-specifications==2025.9.1
+MarkupSafe==3.0.3
+narwhals==2.26.0
+numpy==2.5.3
+packaging==26.3
+pandas==3.0.5
+pillow==12.3.0
+pluggy==1.6.0
+protobuf==7.36.1
+pyarrow==25.0.1
+pydantic_core==2.46.5
+pydeck==0.9.3
+pyee==13.0.1
+Pygments==2.21.0
+python-dateutil==2.9.0.post0
+python-multipart==0.0.32
+PyYAML==6.0.3
+referencing==0.37.0
+requests==2.34.2
+rpds-py==2026.6.3
+six==1.17.0
+soupsieve==2.9.2
+starlette==1.6.0
+toml==0.10.2
+typing-inspection==0.4.4
+typing_extensions==4.16.0
+tzdata==2026.4
+tzlocal==5.4.4
+urllib3==2.7.0
+watchdog==6.0.0
+watchfiles==1.2.0
+websockets==16.1.1

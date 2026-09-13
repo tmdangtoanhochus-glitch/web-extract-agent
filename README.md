@@ -4,12 +4,53 @@
 website được phép, không cần viết code — nhập URL + mô tả field cần lấy bằng ngôn ngữ
 tự nhiên, hệ thống tự crawl và AI trích xuất theo cấu trúc.
 
-Xem `CLAUDE.md` để biết đầy đủ kiến trúc, nguyên tắc thiết kế và quy ước code.
+Xem `CLAUDE.md` để biết đầy đủ kiến trúc, nguyên tắc thiết kế và quy ước code. Xem
+`CHANGELOG.md` cho lịch sử thay đổi chi tiết theo từng phần việc.
 
-## Chạy thử (local, không cần Docker)
+## Trạng thái hiện tại
+
+**Đã xong:**
+- Crawl 1 URL (fetch → làm sạch HTML → ưu tiên structured data JSON-LD/Open Graph →
+  cache chiến lược theo domain → fallback AI) — lưu DB (dataset/schema-match/dedup) hoặc
+  ghi file JSON, chọn 1 trong 2 khi tạo job.
+- Job crawl định kỳ (APScheduler), quản lý qua UI Streamlit.
+- robots.txt thật + rate-limit theo domain trước khi fetch.
+- Gắn cờ `needs_review` khi AI confidence thấp hơn ngưỡng cấu hình.
+- Panel admin nội bộ "AI gợi ý sửa lỗi" cho job lịch bị lỗi (chỉ gợi ý text, không tự sửa).
+- UI Streamlit đầy đủ 5 bước (nguồn → field → chạy & kết quả → dữ liệu đã lưu → lịch).
+- Docker image riêng cho Runtime API/UI để deploy lên GreenNode AgentBase (xem mục
+  "Deploy lên GreenNode") — **chưa build/test thật với Docker daemon**, mới review tĩnh.
+
+**Đang làm dở / chưa làm:**
+- Fetch site JS-heavy bằng Playwright — đã có adapter, chưa bật làm mặc định trong app.
+- Chưa xác nhận URL/format registry thật của GreenNode AgentBase (đang để placeholder
+  trong README mục Deploy).
+- Data Dictionary / Data Lineage, visual selector, chuyển UI sang React — chưa làm, xem
+  `CLAUDE.md` mục "Việc CHƯA làm trong MVP".
+
+## Setup môi trường lần đầu ở máy mới
+
+**Cách 1 (khuyến nghị, đảm bảo môi trường nhất quán giữa các máy): dùng Docker.**
+Không phụ thuộc những gì đã cài sẵn trên từng máy — máy nào chạy `docker compose up`
+cũng ra environment giống hệt nhau, khỏi phải nhớ đúng version Python/package theo trí nhớ.
 
 ```bash
-pip install -r requirements.txt
+cp .env.example .env
+# điền .env
+
+docker compose up --build
+```
+- API: http://localhost:8000 (health check: http://localhost:8000/health)
+- UI: http://localhost:8501 (health check: http://localhost:8501/health)
+
+**Cách 2 (nhanh hơn để dev/debug, nhưng cần tự quản lý version Python đúng theo
+`.python-version`):** venv trực tiếp.
+
+```bash
+python --version   # phải khớp .python-version (3.12.14) — nếu không, cài đúng version qua pyenv
+python -m venv .venv
+source .venv/bin/activate   # Windows: .venv\Scripts\activate
+pip install -r requirements.txt   # version đã cố định (pip freeze) — cài lại ra đúng y hệt bản đã test
 playwright install chromium
 
 cp .env.example .env
@@ -20,16 +61,87 @@ uvicorn src.api.main:app --reload    # chạy backend
 streamlit run ui/app.py              # chạy giao diện (terminal khác)
 ```
 
-## Chạy bằng Docker
+> `requirements.txt` dùng version CỐ ĐỊNH (`==`, sinh bằng `pip freeze` từ venv sạch),
+> không phải `>=` — cài lại ở máy khác ra đúng y hệt version, không lệch theo thời điểm
+> cài. Muốn nâng version package nào, cài thủ công rồi `pip freeze > requirements.txt`
+> lại từ 1 venv sạch (không sửa tay số version).
+
+## AI runtime (GreenNode MaaS)
+
+Format API đã xác nhận qua docs.greennode.ai (không phải giả định — xem docstring
+`src/ai/greennode_client.py` để biết chi tiết/nguồn):
+- `AI_BASE_URL` phải có hậu tố `/v1` (VD: `https://maas-llm-aiplatform-hcm.api.vngcloud.vn/v1`).
+  Client tự nối `/chat/completions` vào sau — thiếu `/v1` sẽ khiến mọi request 404
+  (client có log cảnh báo khi thiếu).
+- `AI_MODEL` phải là ID có prefix nhà cung cấp lấy từ catalog GreenNode (VD xác nhận
+  được: `openai/gpt-4o`), KHÔNG phải tên hiển thị như "Qwen 3.6 Flash" — lấy ID thật
+  qua `GET {AI_BASE_URL}/models` hoặc trang API Keys/Model Catalog trên console GreenNode.
+- Auth: header `Authorization: Bearer <AI_API_KEY>` — không cần header nào khác cho
+  chat completions.
+- `AI_CONFIDENCE_THRESHOLD` (mặc định `0.7`): record vẫn LUÔN được lưu bất kể confidence
+  — ngưỡng này chỉ gắn cờ `needs_review=true` trong record/response `/crawl` để UI cảnh
+  báo người dùng xem lại, KHÔNG loại bỏ hay chặn lưu record nào.
+- `AI_DEBUG_BASE_URL`/`AI_DEBUG_API_KEY`/`AI_DEBUG_MODEL`/`AI_DEBUG_TIMEOUT_SECONDS`:
+  cấu hình riêng cho panel admin "AI gợi ý sửa lỗi" (`ui/pages/9_Admin_Debug.py`) —
+  KHÔNG dùng trong pipeline crawl/extract. Mỗi biến fallback về biến `AI_*` tương ứng
+  nếu để trống (dùng chung endpoint/model với extract theo mặc định).
+
+## Deploy lên GreenNode (AgentBase)
+
+Nền tảng GreenNode AgentBase: **mỗi Agent Runtime = 1 container/1 image riêng**. App này
+có 2 service (FastAPI backend + Streamlit UI) → deploy thành **2 Agent Runtime riêng**,
+mỗi cái build từ 1 Dockerfile riêng (`Dockerfile.api`, `Dockerfile.ui`) — KHÔNG dùng
+`docker-compose.yml` để deploy lên GreenNode (file đó chỉ để chạy dev/test local).
+
+Yêu cầu bắt buộc của nền tảng (đã áp dụng trong 2 Dockerfile): container lắng nghe cổng
+**8080**, có route `GET /health` trả `200` cho liveness/readiness check.
+
+### Bước 1 — Build + tag + push 2 image (làm TRƯỚC khi vào form "Create an Agent runtime")
+
+> ⚠️ Registry thật (Agent Base registry của GreenNode) **chưa xác nhận URL/format** tại
+> thời điểm viết README này — thay `<GREENNODE_REGISTRY_URL>` bên dưới bằng giá trị thật
+> lấy từ console GreenNode/BTC trước khi chạy. Cách `docker login`/tag có thể khác đôi
+> chút tuỳ registry thật, kiểm tra lại hướng dẫn chính thức của GreenNode khi có.
 
 ```bash
-cp .env.example .env
-# điền .env
+# Runtime API
+docker build -f Dockerfile.api -t <GREENNODE_REGISTRY_URL>/web-extract-agent-api:latest .
+docker push <GREENNODE_REGISTRY_URL>/web-extract-agent-api:latest
 
-docker compose up --build
+# Runtime UI
+docker build -f Dockerfile.ui -t <GREENNODE_REGISTRY_URL>/web-extract-agent-ui:latest .
+docker push <GREENNODE_REGISTRY_URL>/web-extract-agent-ui:latest
 ```
-- API: http://localhost:8000
-- UI: http://localhost:8501
+
+### Bước 2 — Tạo Agent Runtime cho API TRƯỚC
+
+Trong form "Create an Agent runtime" trên GreenNode, chọn image
+`web-extract-agent-api:latest` vừa push, điền biến môi trường:
+
+| Biến | Ghi chú |
+|---|---|
+| `AI_BASE_URL` | Endpoint GreenNode MaaS thật, phải có hậu tố `/v1` (xem mục "AI runtime" trên) |
+| `AI_API_KEY` | API key thật — KHÔNG commit vào repo |
+| `AI_MODEL` | Model ID có prefix nhà cung cấp (VD `openai/gpt-4o`), lấy từ catalog GreenNode |
+| `AI_CONFIDENCE_THRESHOLD` | Mặc định `0.7` nếu không set |
+| `AI_DEBUG_BASE_URL`/`AI_DEBUG_API_KEY`/`AI_DEBUG_MODEL`/`AI_DEBUG_TIMEOUT_SECONDS` | Panel admin — để trống nếu dùng chung với `AI_*` ở trên |
+| `DB_PATH` | Đường dẫn SQLite trong container, vd `./data/app.db` — cần mount volume/disk bền vững theo cơ chế storage của GreenNode, nếu không dữ liệu mất khi container restart |
+| `FETCH_USER_AGENT`, `FETCH_DEFAULT_DELAY_SECONDS`, `FETCH_RESPECT_ROBOTS_TXT` | Cấu hình fetch/compliance — xem `.env.example` |
+| `LOG_LEVEL` | Mặc định `INFO` nếu không set |
+
+Sau khi tạo xong, **lấy URL public của Runtime API** (GreenNode cấp sau khi deploy) — cần
+URL này ở bước 3.
+
+### Bước 3 — Tạo Agent Runtime cho UI SAU, dùng URL của Runtime API ở bước 2
+
+Chọn image `web-extract-agent-ui:latest`, điền biến môi trường:
+
+| Biến | Ghi chú |
+|---|---|
+| `API_BASE_URL` | **Bắt buộc** — URL public của Runtime API vừa tạo ở Bước 2 (VD `https://<runtime-api>.greennode.ai`), KHÔNG phải `localhost` |
+
+Thứ tự bắt buộc: **phải deploy xong Runtime API và có URL trước, rồi mới tạo Runtime UI**
+— vì `API_BASE_URL` của UI phụ thuộc vào URL đó.
 
 ## Compliance
 
