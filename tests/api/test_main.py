@@ -1,5 +1,7 @@
 """Test API bằng FastAPI TestClient + test double cho fetch/AI, storage
 in-memory thật — không gọi mạng/AI/endpoint thật (CLAUDE.md mục 6)."""
+import json
+
 import httpx
 import pytest
 from fastapi.testclient import TestClient
@@ -7,6 +9,7 @@ from fastapi.testclient import TestClient
 from src.ai.base import AIClient, ExtractionResult, FieldExtraction
 from src.api.main import create_app
 from src.fetch.base import FetchEngine, FetchResult, utcnow
+from src.storage.file_writer import EXPORTS_ROOT
 from src.storage.sqlite_storage import SQLiteStorage
 
 
@@ -53,6 +56,15 @@ def client():
     return TestClient(app)
 
 
+def test_health_returns_200_ok(client):
+    """Liveness cho nền tảng deploy (GreenNode AgentBase) — không phụ thuộc
+    DB/AI, không cần setup gì thêm ngoài `client` fixture chuẩn."""
+    response = client.get("/health")
+
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+
 def test_crawl_creates_dataset_and_returns_saved_status(client):
     response = client.post(
         "/crawl",
@@ -69,6 +81,46 @@ def test_crawl_creates_dataset_and_returns_saved_status(client):
     assert body["dataset_id"]
     assert body["record_id"]
     assert body["data"] == {"price": "giá trị mẫu"}
+    assert body["needs_review"] is False  # confidence 0.9 >= ngưỡng mặc định 0.7
+
+
+def test_crawl_flags_needs_review_when_confidence_below_configured_threshold():
+    fetcher = _FakeFetcher()
+    ai_client = _FakeAIClient()  # confidence cố định 0.9
+    storage = SQLiteStorage(":memory:")
+    app = create_app(fetcher=fetcher, ai_client=ai_client, storage=storage, confidence_threshold=0.95)
+    client = TestClient(app)
+
+    response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "dataset_name": "Giá vàng SJC",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["needs_review"] is True  # 0.9 < 0.95
+
+
+def test_crawl_still_saves_record_even_when_needs_review_is_true():
+    fetcher = _FakeFetcher()
+    ai_client = _FakeAIClient()
+    storage = SQLiteStorage(":memory:")
+    app = create_app(fetcher=fetcher, ai_client=ai_client, storage=storage, confidence_threshold=0.95)
+    client = TestClient(app)
+
+    response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "dataset_name": "Giá vàng SJC",
+        },
+    )
+
+    assert response.json()["status"] == "saved"  # KHÔNG bị chặn lưu
 
 
 def test_crawl_without_dataset_id_or_dataset_name_returns_422(client):
@@ -147,3 +199,357 @@ def test_records_for_unknown_dataset_returns_404(client):
     response = client.get("/datasets/does-not-exist/records")
 
     assert response.status_code == 404
+
+
+def test_create_schedule_returns_job_for_matching_dataset(client):
+    crawl_response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "dataset_name": "Giá vàng SJC",
+        },
+    )
+    dataset_id = crawl_response.json()["dataset_id"]
+
+    response = client.post(
+        "/schedules",
+        json={
+            "dataset_id": dataset_id,
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "trigger_type": "interval",
+            "trigger_args": {"hours": 1},
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["job_id"]
+    assert body["dataset_id"] == dataset_id
+    assert body["trigger_type"] == "interval"
+    assert body["enabled"] is True
+
+
+def test_create_schedule_for_unknown_dataset_returns_404(client):
+    response = client.post(
+        "/schedules",
+        json={
+            "dataset_id": "does-not-exist",
+            "url": "https://example.com/x",
+            "field_descriptions": {"price": "giá"},
+            "trigger_type": "interval",
+            "trigger_args": {"hours": 1},
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_create_schedule_with_mismatched_schema_returns_409(client):
+    crawl_response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "dataset_name": "Giá vàng SJC",
+        },
+    )
+    dataset_id = crawl_response.json()["dataset_id"]
+
+    response = client.post(
+        "/schedules",
+        json={
+            "dataset_id": dataset_id,
+            "url": "https://example.com/gold",
+            "field_descriptions": {"other_field": "khác hoàn toàn"},
+            "trigger_type": "interval",
+            "trigger_args": {"hours": 1},
+        },
+    )
+
+    assert response.status_code == 409
+
+
+def test_list_schedules_returns_created_jobs(client):
+    crawl_response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "dataset_name": "Giá vàng SJC",
+        },
+    )
+    dataset_id = crawl_response.json()["dataset_id"]
+    client.post(
+        "/schedules",
+        json={
+            "dataset_id": dataset_id,
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "trigger_type": "interval",
+            "trigger_args": {"hours": 1},
+        },
+    )
+
+    response = client.get("/schedules")
+
+    assert response.status_code == 200
+    assert len(response.json()) == 1
+
+
+def test_delete_schedule_removes_it(client):
+    crawl_response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "dataset_name": "Giá vàng SJC",
+        },
+    )
+    dataset_id = crawl_response.json()["dataset_id"]
+    create_response = client.post(
+        "/schedules",
+        json={
+            "dataset_id": dataset_id,
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "trigger_type": "interval",
+            "trigger_args": {"hours": 1},
+        },
+    )
+    job_id = create_response.json()["job_id"]
+
+    delete_response = client.delete(f"/schedules/{job_id}")
+    list_response = client.get("/schedules")
+
+    assert delete_response.status_code == 200
+    assert list_response.json() == []
+
+
+def test_delete_unknown_schedule_returns_404(client):
+    response = client.delete("/schedules/does-not-exist")
+
+    assert response.status_code == 404
+
+
+def test_scheduler_starts_and_stops_with_app_lifespan():
+    """Dùng `with TestClient(app)` để kích hoạt lifespan thật (startup/shutdown)
+    — xác nhận CrawlScheduler thật sự start/shutdown theo vòng đời app, không
+    chỉ test qua unit test riêng của CrawlScheduler."""
+    fetcher = _FakeFetcher()
+    ai_client = _FakeAIClient()
+    storage = SQLiteStorage(":memory:")
+    app = create_app(fetcher=fetcher, ai_client=ai_client, storage=storage)
+
+    with TestClient(app) as client:
+        response = client.get("/schedules")
+        assert response.status_code == 200
+
+
+# ---- storage_mode="file" (lựa chọn lưu file, mục 5+6) ----------------------
+@pytest.fixture
+def export_file():
+    """1 filename tương đối thật dưới `data/exports/` (đã gitignore) — API
+    dùng đúng `exports_root` mặc định nên test ghi thật vào đây rồi tự dọn."""
+    name = "api_test_export.json"
+    path = EXPORTS_ROOT / name
+    yield name, path
+    path.unlink(missing_ok=True)
+
+
+def test_crawl_file_mode_writes_file_and_returns_file_path(client, export_file):
+    file_name, full_path = export_file
+
+    response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "storage_mode": "file",
+            "file_path": file_name,
+            "write_mode": "append",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["status"] == "saved"
+    assert body["file_path"] == file_name
+    assert body["dataset_id"] is None
+    assert body["needs_review"] is False  # confidence 0.9 >= ngưỡng mặc định 0.7
+    assert full_path.exists()
+
+
+def test_crawl_file_mode_does_not_create_any_dataset(client, export_file):
+    file_name, _ = export_file
+    client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "storage_mode": "file",
+            "file_path": file_name,
+            "write_mode": "append",
+        },
+    )
+
+    assert client.get("/datasets").json() == []
+
+
+def test_crawl_file_mode_missing_file_path_returns_400(client):
+    response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "storage_mode": "file",
+            "write_mode": "append",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_crawl_file_mode_invalid_file_path_returns_400(client):
+    response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "storage_mode": "file",
+            "file_path": "../escape.json",
+            "write_mode": "append",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_crawl_file_mode_overwrite_row_missing_key_field_returns_400(client):
+    response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "storage_mode": "file",
+            "file_path": "gold.json",
+            "write_mode": "overwrite_row",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_crawl_file_mode_key_field_not_in_field_descriptions_returns_400(client):
+    response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "storage_mode": "file",
+            "file_path": "gold.json",
+            "write_mode": "overwrite_row",
+            "key_field": "not_declared",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+def test_crawl_invalid_storage_mode_returns_400(client):
+    response = client.post(
+        "/crawl",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "storage_mode": "not_a_real_mode",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+# ---- GET /exports/{path} ----------------------------------------------------
+def test_download_export_returns_file_content(client, export_file):
+    file_name, full_path = export_file
+    full_path.parent.mkdir(parents=True, exist_ok=True)
+    full_path.write_text(json.dumps([{"price": 1}]), encoding="utf-8")
+
+    response = client.get(f"/exports/{file_name}")
+
+    assert response.status_code == 200
+    assert response.json() == [{"price": 1}]
+
+
+def test_download_export_missing_file_returns_404(client):
+    response = client.get("/exports/does-not-exist.json")
+
+    assert response.status_code == 404
+
+
+def test_download_export_path_traversal_returns_400(client):
+    response = client.get("/exports/..%2F..%2Fetc%2Fpasswd")
+
+    assert response.status_code in (400, 404)  # tuỳ cách FastAPI/starlette chuẩn hoá path
+
+
+# ---- storage_mode="file" cho /schedules ------------------------------------
+def test_create_schedule_file_mode_does_not_require_dataset(client):
+    response = client.post(
+        "/schedules",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "trigger_type": "interval",
+            "trigger_args": {"hours": 1},
+            "storage_mode": "file",
+            "file_path": "scheduled_gold.json",
+            "write_mode": "append",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["dataset_id"] is None
+    assert body["storage_mode"] == "file"
+    assert body["file_path"] == "scheduled_gold.json"
+
+
+def test_create_schedule_db_mode_without_dataset_id_returns_422(client):
+    response = client.post(
+        "/schedules",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "trigger_type": "interval",
+            "trigger_args": {"hours": 1},
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_create_schedule_file_mode_invalid_write_mode_returns_400(client):
+    response = client.post(
+        "/schedules",
+        json={
+            "url": "https://example.com/gold",
+            "field_descriptions": {"price": "giá vàng"},
+            "trigger_type": "interval",
+            "trigger_args": {"hours": 1},
+            "storage_mode": "file",
+            "file_path": "gold.json",
+            "write_mode": "not_a_real_mode",
+        },
+    )
+
+    assert response.status_code == 400
+
+
+# ---- panel admin (/admin/errors, xem tests/api/test_admin.py cho chi tiết) --
+def test_admin_errors_route_is_mounted(client):
+    response = client.get("/admin/errors")
+
+    assert response.status_code == 200
+    assert response.json() == []

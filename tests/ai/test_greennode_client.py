@@ -1,4 +1,8 @@
-"""Test GreenNodeChatClient bằng httpx.MockTransport — không gọi endpoint thật."""
+"""Test GreenNodeChatClient bằng httpx.MockTransport — không gọi endpoint thật.
+
+`base_url` dùng trong test có hậu tố `/v1` và `model` có prefix nhà cung cấp
+(`"openai/gpt-4o"`) đúng theo format thật đã xác nhận qua docs.greennode.ai —
+xem docstring `src/ai/greennode_client.py`."""
 import json
 
 import httpx
@@ -6,6 +10,8 @@ import pytest
 
 from src.ai.base import ExtractionResult
 from src.ai.greennode_client import GreenNodeChatClient
+
+_BASE_URL = "https://greennode.example/v1"
 
 
 def _openai_response(content: str) -> dict:
@@ -15,14 +21,12 @@ def _openai_response(content: str) -> dict:
     }
 
 
-def _make_client(handler, **kwargs) -> GreenNodeChatClient:
-    mock_client = httpx.Client(
-        base_url="https://greennode.example/v1", transport=httpx.MockTransport(handler)
-    )
+def _make_client(handler, base_url: str = _BASE_URL, **kwargs) -> GreenNodeChatClient:
+    mock_client = httpx.Client(base_url=base_url, transport=httpx.MockTransport(handler))
     return GreenNodeChatClient(
-        base_url="https://greennode.example/v1",
+        base_url=base_url,
         api_key="test-key",
-        model="qwen-3.6-flash",
+        model="openai/gpt-4o",
         client=mock_client,
         **kwargs,
     )
@@ -126,6 +130,7 @@ def test_extract_sends_authorization_header_and_model():
 
     def handler(request: httpx.Request) -> httpx.Response:
         seen["auth"] = request.headers.get("authorization")
+        seen["url"] = str(request.url)
         seen["body"] = json.loads(request.content)
         return httpx.Response(200, json=_openai_response(json.dumps({"price": {"value": 1, "confidence": 1, "evidence": "e"}})))
 
@@ -133,8 +138,44 @@ def test_extract_sends_authorization_header_and_model():
     client.extract("nội dung", {"price": "giá"})
 
     assert seen["auth"] == "Bearer test-key"
-    assert seen["body"]["model"] == "qwen-3.6-flash"
+    assert seen["body"]["model"] == "openai/gpt-4o"
     assert seen["body"]["messages"][0]["role"] == "system"
+
+
+def test_extract_posts_to_confirmed_chat_completions_path():
+    """Endpoint thật đã xác nhận: POST {base_url}/chat/completions với base_url
+    có hậu tố /v1 (docs.greennode.ai) — request phải đi tới đúng path này,
+    không bị httpx cắt mất phần /v1 khi ghép base_url + path tương đối."""
+    seen_url = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_url["value"] = str(request.url)
+        return httpx.Response(200, json=_openai_response(json.dumps({"price": {"value": 1, "confidence": 1, "evidence": "e"}})))
+
+    client = _make_client(handler)
+    client.extract("nội dung", {"price": "giá"})
+
+    assert seen_url["value"] == "https://greennode.example/v1/chat/completions"
+
+
+def test_warns_when_base_url_missing_v1_suffix(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_openai_response("{}"))
+
+    with caplog.at_level("WARNING"):
+        _make_client(handler, base_url="https://greennode.example")
+
+    assert any("/v1" in record.message for record in caplog.records)
+
+
+def test_no_warning_when_base_url_has_v1_suffix(caplog):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_openai_response("{}"))
+
+    with caplog.at_level("WARNING"):
+        _make_client(handler)
+
+    assert caplog.records == []
 
 
 def test_extract_raises_value_error_for_empty_field_descriptions():

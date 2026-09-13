@@ -1,0 +1,24 @@
+# Image RIÊNG cho Agent Runtime "UI" trên GreenNode AgentBase — chỉ chạy
+# Streamlit UI (đứng sau nginx để có route /health, xem deploy/nginx-ui.conf).
+# KHÔNG cần Playwright/Chromium — UI chỉ gọi HTTP tới Runtime API, không tự
+# fetch trang web nào (xem README mục "Deploy lên GreenNode").
+FROM python:3.12-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    nginx ca-certificates \
+    && rm -rf /var/lib/apt/lists/* \
+    && rm -f /etc/nginx/sites-enabled/default
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+COPY . .
+COPY deploy/nginx-ui.conf /etc/nginx/conf.d/ui.conf
+
+# GreenNode AgentBase yêu cầu container lắng nghe cổng 8080 — nginx nghe 8080,
+# Streamlit chạy nội bộ ở 8501 (không expose, xem deploy/start-ui.sh).
+EXPOSE 8080
+
+CMD ["sh", "deploy/start-ui.sh"]

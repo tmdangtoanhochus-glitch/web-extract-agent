@@ -1,8 +1,24 @@
-"""AI client thật — gọi endpoint Qwen/GLM do GreenNode cấp (CLAUDE.md mục B).
+"""AI client thật — gọi endpoint Qwen/GLM do GreenNode cấp qua MaaS (CLAUDE.md mục B).
 
-Dùng endpoint OpenAI-compatible `/v1/chat/completions` (không dùng SDK `openai`
-để tránh thêm dependency ngoài tech stack đã chốt — gọi thẳng qua `httpx`, vốn
-đã có sẵn trong requirements.txt cho tầng fetch).
+Format đã XÁC NHẬN qua docs.greennode.ai (mục "Model as a Service" / "Kết nối
+OpenAI-compatible với GreenNode MaaS"), không phải giả định:
+- Base URL thật: `https://maas-llm-aiplatform-hcm.api.vngcloud.vn/v1` — LUÔN có
+  hậu tố `/v1`, client OpenAI-compatible trỏ vào URL này rồi tự nối thêm path.
+- Endpoint: `POST {base_url}/chat/completions`, header `Authorization: Bearer
+  <api-key>` — KHÔNG cần header nào khác cho chat completions (header
+  `portal-user-id` chỉ dùng cho API OCR riêng, không áp dụng ở đây).
+- Request/response body đúng chuẩn OpenAI chat completions
+  (`{"model", "messages", ...}` → `choices[0].message.content`).
+- QUAN TRỌNG: `model` phải là ID có prefix nhà cung cấp lấy từ catalog GreenNode
+  (VD xác nhận được: `"openai/gpt-4o"`), KHÔNG phải tên hiển thị (VD sai:
+  "Qwen 3.6 Flash", "qwen-3.6-flash") — lấy ID thật qua `GET {base_url}/models`
+  hoặc trang API Keys/Model Catalog trên console, điền vào `AI_MODEL` trong
+  `.env`. Code ở đây KHÔNG hard-code hay validate cứng chuỗi model, chỉ truyền
+  thẳng giá trị từ `.env` xuống — người vận hành chịu trách nhiệm điền đúng ID.
+
+Dùng endpoint OpenAI-compatible `/chat/completions` (không dùng SDK `openai` để
+tránh thêm dependency ngoài tech stack đã chốt — gọi thẳng qua `httpx`, vốn đã
+có sẵn trong requirements.txt cho tầng fetch).
 
 Endpoint thật + model name lấy từ `.env` (`AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`)
 — KHÔNG hard-code giá trị thật trong code.
@@ -46,6 +62,7 @@ class GreenNodeChatClient(AIClient):
         max_tokens: int = 2048,
         client: Optional[httpx.Client] = None,
     ) -> None:
+        _warn_if_base_url_missing_v1_suffix(base_url)
         self._base_url = base_url
         self._api_key = api_key
         self._model = model
@@ -93,6 +110,19 @@ class GreenNodeChatClient(AIClient):
         finally:
             if owns_client:
                 client.close()
+
+
+def _warn_if_base_url_missing_v1_suffix(base_url: str) -> None:
+    """GreenNode MaaS yêu cầu base URL kết thúc bằng `/v1` (đã xác nhận qua
+    docs.greennode.ai) — thiếu hậu tố này khiến mọi request 404 ở runtime mà
+    lỗi rất khó đoán ra nguyên nhân. Chỉ cảnh báo (không raise) vì có thể đang
+    trỏ tới 1 proxy/gateway khác có quy ước path riêng."""
+    if base_url and not base_url.rstrip("/").endswith("/v1"):
+        logger.warning(
+            "AI_BASE_URL (%s) không kết thúc bằng '/v1' — endpoint GreenNode MaaS "
+            "thật yêu cầu dạng 'https://<host>/v1'. Kiểm tra lại nếu request bị 404.",
+            base_url,
+        )
 
 
 def _build_user_prompt(markdown: str, field_descriptions: dict[str, str]) -> str:

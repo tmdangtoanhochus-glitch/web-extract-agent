@@ -1,0 +1,26 @@
+# Image RIÊNG cho Agent Runtime "API" trên GreenNode AgentBase — chỉ chạy
+# FastAPI backend, KHÔNG chạy Streamlit (xem README mục "Deploy lên GreenNode").
+FROM python:3.12-slim
+
+WORKDIR /app
+
+# Cài dependency hệ thống cần cho Playwright (Chromium) — giữ lại dù API
+# chưa dùng PlaywrightFetcher làm mặc định, để không phá vỡ khả năng bật
+# fetch site JS-heavy sau này mà không phải sửa lại image.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    wget gnupg ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+
+RUN playwright install --with-deps chromium
+
+COPY . .
+
+# GreenNode AgentBase yêu cầu container lắng nghe cổng 8080 — đọc từ biến
+# môi trường PORT (mặc định 8080) để vẫn đổi được cổng khi dev/test local.
+ENV PORT=8080
+EXPOSE 8080
+
+CMD ["sh", "-c", "uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8080}"]

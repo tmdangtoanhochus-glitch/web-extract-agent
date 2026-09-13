@@ -1,17 +1,18 @@
 """Fetch engine dùng httpx — cho site tĩnh (không cần chạy JS).
 
-Site JS-heavy sẽ dùng 1 implementation `FetchEngine` khác dựa trên Playwright,
-thêm sau (xem CLAUDE.md — chưa làm trong bước này).
+Site JS-heavy dùng `PlaywrightFetcher` (xem `src/fetch/playwright_fetcher.py`)
+thay vì engine này.
 """
 from __future__ import annotations
 
 import logging
 from typing import Optional
-from urllib.parse import urlparse
 
 import httpx
 
-from .base import AllowAllRobotsChecker, FetchEngine, FetchResult, RobotsChecker, utcnow
+from .base import FetchEngine, FetchResult, RobotsChecker, domain_of, utcnow
+from .rate_limiter import DomainRateLimiter
+from .robots import HttpRobotsChecker
 
 logger = logging.getLogger(__name__)
 
@@ -23,12 +24,17 @@ class HttpxFetcher(FetchEngine):
     khi test) thay vì luôn tạo client thật — theo adapter/test-double pattern ở
     CLAUDE.md mục 6.
 
-    `robots_checker` mặc định là `AllowAllRobotsChecker` (stub, luôn cho phép) —
-    chưa implement kiểm tra robots.txt thật trong bước này, chỉ có chỗ cắm sẵn.
+    `robots_checker` mặc định là `HttpRobotsChecker` (tải + parse robots.txt
+    thật, xem `src/fetch/robots.py`) — LUÔN bật kiểm tra theo CLAUDE.md mục 3,
+    không phải checkbox tắt/bật. Test/dev muốn bỏ qua robots.txt phải tự truyền
+    tường minh `robots_checker=AllowAllRobotsChecker()` (xem `src/fetch/base.py`),
+    không có cờ bật/tắt ẩn nào ở đây.
 
-    `delay_seconds` giữ chỗ cho rate-limit theo domain (CLAUDE.md mục 3) —
-    hiện tại CHƯA implement (stub, không sleep thật), sẽ làm cùng lúc với
-    robots_checker thật ở bước sau.
+    `delay_seconds` là khoảng cách TỐI THIỂU (giây) giữa 2 lần fetch cùng
+    domain (CLAUDE.md mục 3) — mặc định 0 (không giới hạn); app thật nên
+    truyền `settings.fetch_default_delay_seconds` (xem `src/api/main.py`).
+    Rate-limit dùng chung `DomainRateLimiter` (xem `src/fetch/rate_limiter.py`)
+    với `PlaywrightFetcher`.
     """
 
     def __init__(
@@ -41,15 +47,12 @@ class HttpxFetcher(FetchEngine):
     ) -> None:
         self._user_agent = user_agent
         self._timeout_seconds = timeout_seconds
-        self._robots_checker = robots_checker or AllowAllRobotsChecker()
+        self._robots_checker = robots_checker or HttpRobotsChecker()
         self._injected_client = client
-        self._delay_seconds = delay_seconds
+        self._rate_limiter = DomainRateLimiter(delay_seconds)
 
     def _wait_for_domain(self, url: str) -> None:
-        """STUB — giữ chỗ cho rate-limit/delay giữa các request cùng domain.
-        TODO: track lần fetch gần nhất theo domain (netloc) và sleep đủ
-        `delay_seconds` nếu cần, khi implement robots.txt thật."""
-        return None
+        self._rate_limiter.wait(domain_of(url))
 
     def fetch(self, url: str) -> FetchResult:
         if not self._robots_checker.can_fetch(url, self._user_agent):
@@ -99,7 +102,3 @@ class HttpxFetcher(FetchEngine):
         finally:
             if owns_client:
                 client.close()
-
-
-def domain_of(url: str) -> str:
-    return urlparse(url).netloc

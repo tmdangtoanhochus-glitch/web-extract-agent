@@ -20,6 +20,8 @@ hướng người đọc (họ được lợi gì / cái gì mới), không li�
 - Ưu tiên đọc structured data có sẵn (JSON-LD/Open Graph) trước khi gọi AI.
 - Kiểm tra `robots.txt` thật + rate-limit theo domain trước khi fetch.
 - Hỗ trợ fetch site JS-heavy bằng Playwright (adapter riêng, chưa bật mặc định).
+- Giao diện Streamlit 5 bước (nguồn dữ liệu → trường dữ liệu → chạy & kết quả → dữ liệu
+  đã lưu → lịch tự động), hỗ trợ cả 2 lựa chọn lưu (DB/file) và trang admin riêng.
 
 ### Đã sửa
 - Xác nhận lại format API GreenNode MaaS thật (endpoint, auth, model ID) thay vì giả định.

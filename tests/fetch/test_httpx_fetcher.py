@@ -2,11 +2,16 @@
 import httpx
 import pytest
 
-from src.fetch.base import FetchResult, RobotsChecker
+from src.fetch.base import AllowAllRobotsChecker, FetchResult, RobotsChecker
 from src.fetch.httpx_fetcher import HttpxFetcher, domain_of
 
 
 def _make_fetcher(handler, **kwargs) -> HttpxFetcher:
+    """Mặc định inject `AllowAllRobotsChecker` — các test ở đây kiểm tra cơ chế
+    fetch/parse HTML, không phải hành vi robots.txt (đã có test riêng ở
+    `test_http_robots_checker.py`), và default thật (`HttpRobotsChecker`) sẽ
+    gọi mạng thật để tải robots.txt nếu không override."""
+    kwargs.setdefault("robots_checker", AllowAllRobotsChecker())
     mock_client = httpx.Client(transport=httpx.MockTransport(handler))
     return HttpxFetcher(user_agent="test-agent/0.1", client=mock_client, **kwargs)
 

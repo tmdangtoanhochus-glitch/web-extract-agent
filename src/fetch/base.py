@@ -11,6 +11,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -39,12 +40,15 @@ class RobotsChecker(ABC):
 
 
 class AllowAllRobotsChecker(RobotsChecker):
-    """STUB tạm thời — LUÔN cho phép fetch, CHƯA thật sự tải/parse robots.txt.
+    """LUÔN cho phép fetch, KHÔNG tải/parse robots.txt — chỉ dùng làm test
+    double khi test không cần quan tâm hành vi robots.txt (vd. test cơ chế
+    fetch/parse HTML), hoặc dev cục bộ.
 
-    Đây chỉ là placeholder để `HttpxFetcher` có chỗ cắm logic robots.txt thật
-    (theo CLAUDE.md mục 3: mặc định phải luôn kiểm tra, không phải toggle).
-    TODO: implement checker thật (tải robots.txt theo domain, cache theo TTL,
-    log rõ khi 1 domain bị chặn) trước khi crawl domain ngoài whitelist test.
+    KHÔNG phải default của `HttpxFetcher` (default thật là `HttpRobotsChecker`
+    ở `src/fetch/robots.py`, có tải + parse robots.txt — CLAUDE.md mục 3: mặc
+    định phải luôn kiểm tra, không phải toggle). Muốn dùng class này cho crawl
+    thật phải tự truyền tường minh `robots_checker=AllowAllRobotsChecker()`
+    khi khởi tạo `HttpxFetcher` — không có cờ bật/tắt ẩn nào.
     """
 
     def can_fetch(self, url: str, user_agent: str) -> bool:
@@ -66,3 +70,9 @@ class FetchEngine(ABC):
 
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
+
+
+def domain_of(url: str) -> str:
+    """Dùng chung cho `HttpxFetcher`/`PlaywrightFetcher`/`pipeline.py` (rate
+    limit, robots.txt, cache chiến lược extract theo domain — CLAUDE.md mục 3+5)."""
+    return urlparse(url).netloc

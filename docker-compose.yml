@@ -1,8 +1,10 @@
 services:
   api:
-    build: .
+    build:
+      context: .
+      dockerfile: Dockerfile.api
     ports:
-      - "8000:8000"
+      - "8000:8080"  # host:container — container luôn nghe 8080 (yêu cầu GreenNode AgentBase)
     env_file:
       - .env
     volumes:
@@ -10,10 +12,15 @@ services:
     restart: unless-stopped
 
   ui:
-    build: .
-    command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+    build:
+      context: .
+      dockerfile: Dockerfile.ui
     ports:
-      - "8501:8501"
+      - "8501:8080"  # host:container — container luôn nghe 8080 (nginx, xem Dockerfile.ui)
+    environment:
+      # Trong mạng docker-compose, gọi service khác qua tên service, không phải
+      # localhost — "api" là tên service ở trên, port 8080 là port container thật.
+      - API_BASE_URL=http://api:8080
     env_file:
       - .env
     volumes:

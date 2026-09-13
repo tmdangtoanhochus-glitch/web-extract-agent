@@ -1,10 +1,12 @@
 """Test luồng orchestration run_crawl_job bằng test double cho fetch/AI
 (CLAUDE.md mục 6) + SQLiteStorage in-memory thật (không cần mock)."""
+import json
+
 import pytest
 
 from src.ai.base import AIClient, ExtractionResult, FieldExtraction
 from src.fetch.base import FetchEngine, FetchResult, utcnow
-from src.pipeline import run_crawl_job
+from src.pipeline import run_crawl_job, run_file_crawl_job
 from src.storage.sqlite_storage import SQLiteStorage
 
 
@@ -76,10 +78,68 @@ def test_saves_new_record_and_creates_dataset():
     assert result.record.data == {"price": 75000000, "date": "2026-09-11"}
     assert result.record.confidence == pytest.approx(0.85)  # avg(0.9, 0.8)
     assert result.record.evidence == {"price": "giá x", "date": "ngày y"}
+    assert result.record.needs_review is False  # 0.85 >= ngưỡng mặc định 0.7
 
     sources = storage.list_sources(result.dataset.dataset_id, active_only=True)
     assert len(sources) == 1
     assert sources[0].source_url == "https://example.com/gold"
+
+
+def test_record_flagged_needs_review_when_confidence_below_threshold_but_still_saved():
+    """AI_CONFIDENCE_THRESHOLD chỉ gắn cờ cảnh báo — record vẫn LUÔN được lưu
+    dù confidence thấp, KHÔNG bị loại bỏ."""
+    fetcher = _FakeFetcher(default_html="<html><body><p>abc</p></body></html>")
+    ai_client = _FakeAIClient([_extraction(price_conf=0.3, date_conf=0.3)])
+    storage = _storage()
+
+    result = run_crawl_job(
+        url="https://example.com/gold",
+        field_descriptions={"price": "giá vàng", "date": "ngày cập nhật"},
+        dataset_name="Giá vàng SJC",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+    )
+
+    assert result.status == "saved"  # vẫn lưu bình thường
+    assert result.record.confidence == pytest.approx(0.3)
+    assert result.record.needs_review is True
+
+
+def test_needs_review_threshold_is_configurable():
+    fetcher = _FakeFetcher(default_html="<html><body><p>abc</p></body></html>")
+    ai_client = _FakeAIClient([_extraction(price_conf=0.5, date_conf=0.5)])
+    storage = _storage()
+
+    result = run_crawl_job(
+        url="https://example.com/gold",
+        field_descriptions={"price": "giá vàng", "date": "ngày cập nhật"},
+        dataset_name="Giá vàng SJC",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+        confidence_threshold=0.3,  # thấp hơn 0.5 -> không cần review
+    )
+
+    assert result.record.needs_review is False
+
+
+def test_needs_review_persists_on_reread_from_storage():
+    fetcher = _FakeFetcher(default_html="<html><body><p>abc</p></body></html>")
+    ai_client = _FakeAIClient([_extraction(price_conf=0.2, date_conf=0.2)])
+    storage = _storage()
+
+    result = run_crawl_job(
+        url="https://example.com/gold",
+        field_descriptions={"price": "giá vàng", "date": "ngày cập nhật"},
+        dataset_name="Giá vàng SJC",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+    )
+
+    fetched = storage.list_records(result.dataset.dataset_id)[0]
+    assert fetched.needs_review is True
 
 
 def test_second_crawl_same_content_returns_unchanged_without_calling_ai_again():
@@ -269,6 +329,179 @@ def test_unknown_dataset_id_returns_dataset_not_found():
     assert fetcher.calls == []
 
 
+def test_field_resolved_from_structured_data_skips_ai_entirely():
+    """CLAUDE.md mục 2: có structured data (Open Graph) thì dùng trực tiếp,
+    không gọi AI — kể cả khi field_descriptions mô tả field bằng ngôn ngữ khác."""
+    html = '<html><head><meta property="og:title" content="SJC 1L"></head></html>'
+    fetcher = _FakeFetcher(default_html=html)
+    ai_client = _FakeAIClient([])  # cố tình rỗng — nếu bị gọi sẽ raise IndexError
+    storage = _storage()
+
+    result = run_crawl_job(
+        url="https://example.com/gold",
+        field_descriptions={"title": "tên sản phẩm"},
+        dataset_name="Giá vàng",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+    )
+
+    assert result.status == "saved"
+    assert result.record.data == {"title": "SJC 1L"}
+    assert result.record.confidence == 1.0
+    assert result.record.evidence == {"title": "og:title='SJC 1L'"}
+    assert ai_client.calls == 0
+
+
+def test_field_not_in_structured_data_still_falls_back_to_ai():
+    """Field không match structured data (vd. "price" nhưng trang không có
+    JSON-LD offers) vẫn phải hỏi AI như cũ — không bỏ sót field."""
+    html = '<html><head><meta property="og:title" content="SJC 1L"></head></html>'
+    fetcher = _FakeFetcher(default_html=html)
+    ai_client = _FakeAIClient(
+        [ExtractionResult(fields={"price": FieldExtraction(value=79900000, confidence=0.9, evidence="giá y")}, success=True)]
+    )
+    storage = _storage()
+
+    result = run_crawl_job(
+        url="https://example.com/gold",
+        field_descriptions={"title": "tên sản phẩm", "price": "giá bán"},
+        dataset_name="Giá vàng",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+    )
+
+    assert result.status == "saved"
+    assert result.record.data == {"title": "SJC 1L", "price": 79900000}
+    assert ai_client.calls == 1
+
+
+def test_only_unresolved_fields_are_sent_to_ai_client():
+    """AI chỉ nhận field_descriptions của field CHƯA match được structured
+    data — không gửi lại field đã có sẵn (tiết kiệm token, CLAUDE.md mục 2)."""
+    html = '<html><head><meta property="og:title" content="SJC 1L"></head></html>'
+    fetcher = _FakeFetcher(default_html=html)
+    ai_client = _FakeAIClient(
+        [ExtractionResult(fields={"price": FieldExtraction(value=1, confidence=1.0)}, success=True)]
+    )
+    storage = _storage()
+    seen_descriptions: dict[str, str] = {}
+
+    original_extract = ai_client.extract
+
+    def _spy_extract(markdown, field_descriptions):
+        seen_descriptions.update(field_descriptions)
+        return original_extract(markdown, field_descriptions)
+
+    ai_client.extract = _spy_extract
+
+    run_crawl_job(
+        url="https://example.com/gold",
+        field_descriptions={"title": "tên sản phẩm", "price": "giá bán"},
+        dataset_name="Giá vàng",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+    )
+
+    assert seen_descriptions == {"price": "giá bán"}
+
+
+def test_ai_resolved_field_gets_cached_and_reused_without_ai_call_when_value_changes():
+    """CLAUDE.md mục 5: AI định vị được field lần đầu -> lưu chiến lược theo
+    domain; lần cào sau, dù NỘI DUNG đổi (giá khác) nhưng CẤU TRÚC DOM giữ
+    nguyên, selector cache vẫn áp lại đúng, không cần gọi AI lại."""
+    html1 = "<html><body><div><span>SJC 1L</span><span>79.900.000</span></div></body></html>"
+    html2 = "<html><body><div><span>SJC 1L</span><span>85.000.000</span></div></body></html>"
+    url = "https://example.com/gold"
+    fetcher = _FakeFetcher(html_by_url={url: html1})
+    ai_client = _FakeAIClient(
+        [ExtractionResult(fields={"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}, success=True)]
+    )
+    storage = _storage()
+
+    first = run_crawl_job(
+        url=url, field_descriptions={"price": "giá bán"}, dataset_name="Giá vàng",
+        fetcher=fetcher, ai_client=ai_client, storage=storage,
+    )
+    assert first.status == "saved"
+    assert ai_client.calls == 1
+    assert storage.get_extraction_strategy("example.com", "price") is not None
+
+    fetcher._html_by_url[url] = html2
+    second = run_crawl_job(
+        url=url, field_descriptions={"price": "giá bán"}, dataset_id=first.dataset.dataset_id,
+        fetcher=fetcher, ai_client=ai_client, storage=storage,
+    )
+
+    assert second.status == "saved"
+    assert ai_client.calls == 1  # KHÔNG gọi AI lại — dùng selector cache
+    assert second.record.data == {"price": "85.000.000"}
+    assert "cached_selector:" in second.record.evidence["price"]
+
+
+def test_cache_fail_when_site_structure_changes_falls_back_to_ai_and_refreshes_cache():
+    """Selector cache không còn khớp (site đổi cấu trúc) -> fallback gọi AI
+    lại, đồng thời ghi đè cache bằng selector mới."""
+    html1 = "<html><body><div><span>SJC 1L</span><span>79.900.000</span></div></body></html>"
+    html2 = "<html><body><section><em>giá mới: 90.000.000</em></section></body></html>"
+    url = "https://example.com/gold"
+    fetcher = _FakeFetcher(html_by_url={url: html1})
+    ai_client = _FakeAIClient(
+        [
+            ExtractionResult(fields={"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}, success=True),
+            ExtractionResult(fields={"price": FieldExtraction(value="90.000.000", confidence=0.85, evidence="e2")}, success=True),
+        ]
+    )
+    storage = _storage()
+
+    first = run_crawl_job(
+        url=url, field_descriptions={"price": "giá bán"}, dataset_name="Giá vàng",
+        fetcher=fetcher, ai_client=ai_client, storage=storage,
+    )
+    old_strategy = storage.get_extraction_strategy("example.com", "price")
+
+    fetcher._html_by_url[url] = html2
+    second = run_crawl_job(
+        url=url, field_descriptions={"price": "giá bán"}, dataset_id=first.dataset.dataset_id,
+        fetcher=fetcher, ai_client=ai_client, storage=storage,
+    )
+
+    assert second.status == "saved"
+    assert ai_client.calls == 2  # cache fail -> phải gọi AI lại
+    assert second.record.data == {"price": "90.000.000"}
+    new_strategy = storage.get_extraction_strategy("example.com", "price")
+    assert new_strategy.selector != old_strategy.selector
+
+
+def test_extraction_strategy_cache_is_scoped_per_domain():
+    """Field cùng tên trên domain KHÁC không được dùng chung cache — mỗi
+    domain phải tự có chiến lược riêng (CLAUDE.md mục 5: 'cache theo domain')."""
+    html = "<html><body><div><span>79.900.000</span></div></body></html>"
+    ai_client = _FakeAIClient(
+        [
+            ExtractionResult(fields={"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}, success=True),
+            ExtractionResult(fields={"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}, success=True),
+        ]
+    )
+    storage = _storage()
+
+    fetcher_a = _FakeFetcher(default_html=html)
+    run_crawl_job(
+        url="https://a.example.com/gold", field_descriptions={"price": "giá bán"}, dataset_name="A",
+        fetcher=fetcher_a, ai_client=ai_client, storage=storage,
+    )
+
+    fetcher_b = _FakeFetcher(default_html=html)
+    run_crawl_job(
+        url="https://b.example.com/gold", field_descriptions={"price": "giá bán"}, dataset_name="B",
+        fetcher=fetcher_b, ai_client=ai_client, storage=storage,
+    )
+
+    assert ai_client.calls == 2  # domain B không dùng ké cache của domain A
+
+
 def test_dataset_id_with_mismatched_schema_returns_schema_mismatch():
     fetcher = _FakeFetcher(default_html="<html><body><p>abc</p></body></html>")
     ai_client = _FakeAIClient([_extraction()])
@@ -294,3 +527,200 @@ def test_dataset_id_with_mismatched_schema_returns_schema_mismatch():
 
     assert result.status == "schema_mismatch"
     assert ai_client.calls == 1  # chỉ gọi lần crawl đầu, lần 2 bị chặn trước khi fetch/extract
+
+
+# ---------------------------------------------------------- run_file_crawl_job ----
+def test_file_crawl_saves_to_file_without_creating_dataset(tmp_path):
+    fetcher = _FakeFetcher(default_html="<html><body><p>giá 75.000.000</p></body></html>")
+    ai_client = _FakeAIClient([_extraction()])
+    storage = _storage()
+
+    result = run_file_crawl_job(
+        url="https://example.com/gold",
+        field_descriptions={"price": "giá vàng", "date": "ngày cập nhật"},
+        file_path="gold.json",
+        write_mode="append",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+        exports_root=tmp_path,
+    )
+
+    assert result.status == "saved"
+    assert result.file_path == "gold.json"
+    assert result.data == {"price": 75000000, "date": "2026-09-11"}
+    assert result.needs_review is False  # 0.85 >= ngưỡng mặc định 0.7
+    assert storage.list_datasets() == []  # KHÔNG tạo dataset nào
+
+    written = json.loads((tmp_path / "gold.json").read_text(encoding="utf-8"))
+    assert len(written) == 1
+    assert written[0]["data"] == {"price": 75000000, "date": "2026-09-11"}
+    assert written[0]["source_url"] == "https://example.com/gold"
+    assert written[0]["needs_review"] is False
+
+
+def test_file_crawl_flags_needs_review_when_confidence_below_threshold(tmp_path):
+    fetcher = _FakeFetcher(default_html="<html><body><p>abc</p></body></html>")
+    ai_client = _FakeAIClient([_extraction(price_conf=0.2, date_conf=0.2)])
+    storage = _storage()
+
+    result = run_file_crawl_job(
+        url="https://example.com/gold",
+        field_descriptions={"price": "giá vàng", "date": "ngày cập nhật"},
+        file_path="gold.json",
+        write_mode="append",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+        exports_root=tmp_path,
+    )
+
+    assert result.status == "saved"  # vẫn ghi bình thường, không bị chặn
+    assert result.needs_review is True
+    written = json.loads((tmp_path / "gold.json").read_text(encoding="utf-8"))
+    assert written[0]["needs_review"] is True
+
+
+def test_file_crawl_does_not_dedup_repeated_identical_crawls(tmp_path):
+    """Luồng file KHÔNG dedup theo content_hash — cào lại cùng URL/nội dung
+    giống hệt vẫn ghi thêm record mới (đối lập có chủ đích với luồng DB)."""
+    fetcher = _FakeFetcher(default_html="<html><body><p>giá 75.000.000</p></body></html>")
+    ai_client = _FakeAIClient([_extraction(), _extraction()])
+    storage = _storage()
+    kwargs = dict(
+        url="https://example.com/gold",
+        field_descriptions={"price": "giá vàng", "date": "ngày cập nhật"},
+        file_path="gold.json",
+        write_mode="append",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+        exports_root=tmp_path,
+    )
+
+    run_file_crawl_job(**kwargs)
+    run_file_crawl_job(**kwargs)
+
+    assert ai_client.calls == 2  # không có bước "unchanged" để bỏ qua AI
+    written = json.loads((tmp_path / "gold.json").read_text(encoding="utf-8"))
+    assert len(written) == 2
+
+
+def test_file_crawl_fetch_failure_returns_fetch_failed_and_writes_nothing(tmp_path):
+    fetcher = _FakeFetcher()  # không có html -> 404
+    ai_client = _FakeAIClient([_extraction()])
+    storage = _storage()
+
+    result = run_file_crawl_job(
+        url="https://example.com/missing",
+        field_descriptions={"price": "giá"},
+        file_path="gold.json",
+        write_mode="append",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+        exports_root=tmp_path,
+    )
+
+    assert result.status == "fetch_failed"
+    assert ai_client.calls == 0
+    assert not (tmp_path / "gold.json").exists()
+
+
+def test_file_crawl_extract_failure_returns_extract_failed_and_writes_nothing(tmp_path):
+    fetcher = _FakeFetcher(default_html="<html><body><p>abc</p></body></html>")
+    ai_client = _FakeAIClient([ExtractionResult(success=False, error="ai_timeout")])
+    storage = _storage()
+
+    result = run_file_crawl_job(
+        url="https://example.com/x",
+        field_descriptions={"price": "giá"},
+        file_path="gold.json",
+        write_mode="append",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+        exports_root=tmp_path,
+    )
+
+    assert result.status == "extract_failed"
+    assert not (tmp_path / "gold.json").exists()
+
+
+def test_file_crawl_invalid_file_path_returns_invalid_file_config_without_calling_ai(tmp_path):
+    fetcher = _FakeFetcher(default_html="<html><body><p>abc</p></body></html>")
+    ai_client = _FakeAIClient([_extraction()])
+    storage = _storage()
+
+    result = run_file_crawl_job(
+        url="https://example.com/x",
+        field_descriptions={"price": "giá"},
+        file_path="../escape.json",
+        write_mode="append",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+        exports_root=tmp_path,
+    )
+
+    assert result.status == "invalid_file_config"
+
+
+def test_file_crawl_overwrite_row_replaces_by_key_field(tmp_path):
+    fetcher = _FakeFetcher(default_html="<html><body><p>giá 75.000.000</p></body></html>")
+    ai_client = _FakeAIClient([_extraction(price_value=1), _extraction(price_value=2)])
+    storage = _storage()
+    kwargs = dict(
+        url="https://example.com/gold",
+        field_descriptions={"price": "giá vàng", "date": "ngày cập nhật"},
+        file_path="gold.json",
+        write_mode="overwrite_row",
+        key_field="date",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+        exports_root=tmp_path,
+    )
+
+    run_file_crawl_job(**kwargs)
+    run_file_crawl_job(**kwargs)
+
+    written = json.loads((tmp_path / "gold.json").read_text(encoding="utf-8"))
+    assert len(written) == 1  # cùng date -> ghi đè, không thêm dòng mới
+    assert written[0]["data"]["price"] == 2
+
+
+def test_file_crawl_reuses_extraction_strategy_cache_across_file_and_db_flows(tmp_path):
+    """Cache chiến lược theo domain (CLAUDE.md mục 5) dùng chung `storage` cho
+    cả 2 luồng — AI định vị field ở luồng DB thì luồng file cùng domain sau đó
+    tận dụng lại được, không cần gọi AI riêng."""
+    html = "<html><body><div><span>SJC 1L</span><span>79.900.000</span></div></body></html>"
+    storage = _storage()
+    ai_client = _FakeAIClient(
+        [ExtractionResult(fields={"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}, success=True)]
+    )
+
+    run_crawl_job(
+        url="https://example.com/db-page",
+        field_descriptions={"price": "giá bán"},
+        dataset_name="Giá vàng",
+        fetcher=_FakeFetcher(default_html=html),
+        ai_client=ai_client,
+        storage=storage,
+    )
+    assert ai_client.calls == 1
+
+    file_result = run_file_crawl_job(
+        url="https://example.com/file-page",
+        field_descriptions={"price": "giá bán"},
+        file_path="gold.json",
+        write_mode="append",
+        fetcher=_FakeFetcher(default_html=html),
+        ai_client=ai_client,
+        storage=storage,
+        exports_root=tmp_path,
+    )
+
+    assert file_result.status == "saved"
+    assert ai_client.calls == 1  # vẫn 1 — luồng file tận dụng cache, không gọi AI lại
+    assert file_result.data == {"price": "79.900.000"}
