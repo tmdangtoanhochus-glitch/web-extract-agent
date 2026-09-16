@@ -40,6 +40,7 @@ class PipelineResult:
     status: str  # "saved" | "unchanged" | "fetch_failed" | "extract_failed"
     dataset: Optional[Dataset] = None
     record: Optional[Record] = None
+    record_count: int = 0
     detail: Optional[str] = None
 
 
@@ -50,6 +51,7 @@ class FileCrawlResult:
     data: Optional[dict[str, Any]] = None
     confidence: Optional[float] = None
     needs_review: bool = False
+    record_count: int = 0
     detail: Optional[str] = None
 
 
@@ -67,7 +69,7 @@ class FetchAndClean:
 
 @dataclass(frozen=True)
 class AiExtractResult:
-    fields: dict[str, FieldExtraction] = field(default_factory=dict)
+    records: list[dict[str, FieldExtraction]] = field(default_factory=list)
     success: bool = True
     error: Optional[str] = None
 
@@ -135,24 +137,31 @@ def ai_extract(
         extraction = ai_client.extract(markdown, remaining_descriptions)
         if not extraction.success:
             logger.warning("AI extract thất bại cho %s: %s", url, extraction.error)
-            return AiExtractResult(fields=resolved_fields, success=False, error=extraction.error)
-        resolved_fields.update(extraction.fields)
+            return AiExtractResult(records=[resolved_fields], success=False, error=extraction.error)
 
-        # AI vừa định vị được field mới (hoặc định vị lại field cache cũ đã
-        # fail) — suy ra selector rồi lưu/ghi đè cache cho lần cào sau.
-        for name, fe in extraction.fields.items():
-            if fe.value in (None, ""):
-                continue
-            selector = find_selector(html, fe.value)
-            if selector is not None:
-                storage.save_extraction_strategy(domain, name, selector, sample_value=str(fe.value))
+        # AI trả về array các record — gộp resolved_fields (structured data/cache)
+        # vào mỗi record.
+        all_records: list[dict[str, FieldExtraction]] = []
+        for ai_fields in extraction.records:
+            merged = {**resolved_fields, **ai_fields}
+            all_records.append(merged)
+
+        # Cache selector cho field AI vừa định vị (dùng record đầu tiên).
+        if all_records:
+            for name, fe in all_records[0].items():
+                if fe.value in (None, ""):
+                    continue
+                selector = find_selector(html, fe.value)
+                if selector is not None:
+                    storage.save_extraction_strategy(domain, name, selector, sample_value=str(fe.value))
     else:
         logger.info(
             "Toàn bộ field của %s lấy được từ structured data/cache — bỏ qua AI.",
             url,
         )
+        all_records = [resolved_fields]
 
-    return AiExtractResult(fields=resolved_fields, success=True)
+    return AiExtractResult(records=all_records, success=True)
 
 
 def run_crawl_job(
@@ -214,21 +223,30 @@ def run_crawl_job(
     if not extraction.success:
         return PipelineResult(status="extract_failed", dataset=dataset, detail=extraction.error)
 
-    data = {name: fe.value for name, fe in extraction.fields.items()}
-    evidence = {name: fe.evidence for name, fe in extraction.fields.items() if fe.evidence}
-    confidences = [fe.confidence for fe in extraction.fields.values()]
-    overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+    saved_records: list[Record] = []
+    for fields in extraction.records:
+        data = {name: fe.value for name, fe in fields.items()}
+        evidence = {name: fe.evidence for name, fe in fields.items() if fe.evidence}
+        confidences = [fe.confidence for fe in fields.values()]
+        overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
-    record = storage.save_record(
-        dataset_id=dataset.dataset_id,
-        source_url=url,
-        data=data,
-        content_hash=fac.content_hash,
-        evidence=evidence,
-        confidence=overall_confidence,
-        needs_review=overall_confidence < confidence_threshold,
+        record = storage.save_record(
+            dataset_id=dataset.dataset_id,
+            source_url=url,
+            data=data,
+            content_hash=fac.content_hash,
+            evidence=evidence,
+            confidence=overall_confidence,
+            needs_review=overall_confidence < confidence_threshold,
+        )
+        saved_records.append(record)
+
+    return PipelineResult(
+        status="saved",
+        dataset=dataset,
+        record=saved_records[0] if saved_records else None,
+        record_count=len(saved_records),
     )
-    return PipelineResult(status="saved", dataset=dataset, record=record)
 
 
 def run_file_crawl_job(
@@ -261,38 +279,49 @@ def run_file_crawl_job(
     if not extraction.success:
         return FileCrawlResult(status="extract_failed", detail=extraction.error)
 
-    data = {name: fe.value for name, fe in extraction.fields.items()}
-    evidence = {name: fe.evidence for name, fe in extraction.fields.items() if fe.evidence}
-    confidences = [fe.confidence for fe in extraction.fields.values()]
-    overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
-    needs_review = overall_confidence < confidence_threshold
+    first_data: Optional[dict[str, Any]] = None
+    first_confidence: Optional[float] = None
+    first_needs_review = False
+    write_result = None
 
-    record = {
-        "source_url": url,
-        "data": data,
-        "evidence": evidence,
-        "confidence": overall_confidence,
-        "needs_review": needs_review,
-        "crawled_at": datetime.now(timezone.utc).isoformat(),
-    }
+    for fields in extraction.records:
+        data = {name: fe.value for name, fe in fields.items()}
+        evidence = {name: fe.evidence for name, fe in fields.items() if fe.evidence}
+        confidences = [fe.confidence for fe in fields.values()]
+        overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+        needs_review = overall_confidence < confidence_threshold
 
-    try:
-        write_result = write_record(
-            file_path=file_path,
-            record=record,
-            write_mode=write_mode,
-            key_field=key_field,
-            field_names=list(field_descriptions.keys()),
-            exports_root=exports_root,
-        )
-    except (InvalidFilePathError, InvalidKeyFieldError) as exc:
-        logger.warning("Cấu hình file không hợp lệ cho %s: %s", url, exc)
-        return FileCrawlResult(status="invalid_file_config", detail=str(exc))
+        record = {
+            **data,
+            "source_url": url,
+            "confidence": overall_confidence,
+            "needs_review": needs_review,
+            "crawled_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            write_result = write_record(
+                file_path=file_path,
+                record=record,
+                write_mode=write_mode,
+                key_field=key_field,
+                field_names=list(field_descriptions.keys()),
+                exports_root=exports_root,
+            )
+        except (InvalidFilePathError, InvalidKeyFieldError) as exc:
+            logger.warning("Cấu hình file không hợp lệ cho %s: %s", url, exc)
+            return FileCrawlResult(status="invalid_file_config", detail=str(exc))
+
+        if first_data is None:
+            first_data = data
+            first_confidence = overall_confidence
+            first_needs_review = needs_review
 
     return FileCrawlResult(
         status="saved",
-        file_path=write_result.file_path,
-        data=data,
-        confidence=overall_confidence,
-        needs_review=needs_review,
+        file_path=write_result.file_path if write_result else None,
+        data=first_data,
+        confidence=first_confidence,
+        needs_review=first_needs_review,
+        record_count=len(extraction.records),
     )

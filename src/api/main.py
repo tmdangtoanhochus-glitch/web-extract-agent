@@ -51,6 +51,7 @@ class CrawlResponse(BaseModel):
     status: str
     dataset_id: Optional[str] = None
     record_id: Optional[str] = None
+    record_count: int = 0
     file_path: Optional[str] = None
     data: Optional[dict] = None
     confidence: Optional[float] = None
@@ -163,6 +164,7 @@ def create_app(
                 data=file_result.data,
                 confidence=file_result.confidence,
                 needs_review=file_result.needs_review,
+                record_count=file_result.record_count,
             )
 
         if not req.dataset_id and not req.dataset_name:
@@ -192,6 +194,7 @@ def create_app(
             status=result.status,
             dataset_id=result.dataset.dataset_id if result.dataset else None,
             record_id=result.record.record_id if result.record else None,
+            record_count=result.record_count,
             data=result.record.data if result.record else None,
             confidence=result.record.confidence if result.record else None,
             needs_review=result.record.needs_review if result.record else None,
@@ -284,9 +287,14 @@ def create_app(
 
 def _build_default_app() -> FastAPI:
     settings = load_settings()
+    robots_checker = None
+    if not settings.fetch_respect_robots_txt:
+        from ..fetch.base import AllowAllRobotsChecker
+        robots_checker = AllowAllRobotsChecker()
     fetcher = HttpxFetcher(
         user_agent=settings.fetch_user_agent,
         delay_seconds=settings.fetch_default_delay_seconds,
+        robots_checker=robots_checker,
     )
     ai_client = GreenNodeChatClient(
         base_url=settings.ai_base_url,

@@ -27,6 +27,9 @@ pydantic==2.13.5
 pytest==9.1.1
 pytest-mock==3.15.1
 
+# Export
+openpyxl==3.1.5
+
 # --- Transitive dependencies (pin theo pip freeze, giữ nguyên để đảm bảo tái tạo đúng) ---
 altair==6.2.2
 annotated-doc==0.0.5

@@ -75,6 +75,7 @@ def _init_state() -> None:
         "run_dataset_id": None,
         "run_file_paths": [],
         "run_log": [],
+        "is_crawling": False,
     }
     for key, value in defaults.items():
         if key not in st.session_state:
@@ -85,7 +86,7 @@ _init_state()
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(base_url=API_BASE_URL, timeout=60.0)
+    return httpx.Client(base_url=API_BASE_URL, timeout=300.0)
 
 
 def _api_get(path: str) -> Optional[Any]:
@@ -227,6 +228,31 @@ def _render_step1() -> None:
         if new_url.strip() not in st.session_state.urls:
             st.session_state.urls.append(new_url.strip())
 
+    st.markdown("**Phân trang (pagination)**")
+    use_pagination = st.checkbox("Bật phân trang — cào nhiều page liên tiếp", key="use_pagination")
+    if use_pagination:
+        col_p1, col_p2, col_p3 = st.columns([6, 2, 2])
+        with col_p1:
+            page_url_pattern = st.text_input(
+                "URL pattern (dùng {page} làm số trang)",
+                key="page_url_pattern",
+                placeholder="https://books.toscrape.com/catalogue/page-{page}.html",
+            )
+        with col_p2:
+            page_start = st.number_input("Từ page", min_value=1, value=1, key="page_start")
+        with col_p3:
+            page_end = st.number_input("Đến page", min_value=1, value=50, key="page_end")
+        if st.button("+ Sinh URL theo page", key="gen_page_urls") and page_url_pattern.strip():
+            generated = [
+                page_url_pattern.replace("{page}", str(p))
+                for p in range(int(page_start), int(page_end) + 1)
+            ]
+            for g in generated:
+                if g not in st.session_state.urls:
+                    st.session_state.urls.append(g)
+            st.success(f"Đã thêm {len(generated)} URL (page {int(page_start)}–{int(page_end)}).")
+            st.rerun()
+
     for url in list(st.session_state.urls):
         c1, c2 = st.columns([10, 1])
         c1.markdown(f'<span class="mp-pill">🔗 {url}</span>', unsafe_allow_html=True)
@@ -362,11 +388,27 @@ def _render_step3() -> None:
     st.markdown("**URL:** " + ", ".join(st.session_state.urls))
     st.markdown("**Field:** " + ", ".join(field_descriptions.keys()))
 
-    if st.button("🚀 Chạy crawl", type="primary"):
+    crawl_clicked = st.button("🚀 Chạy crawl", type="primary", disabled=st.session_state.get("is_crawling", False))
+    if crawl_clicked:
+        st.session_state.is_crawling = True
         st.session_state.run_log = []
         st.session_state.run_file_paths = []
+        st.session_state.run_preview_data = None
         dataset_id = st.session_state.selected_dataset_id
-        for url in st.session_state.urls:
+        total_urls = len(st.session_state.urls)
+        progress = st.progress(0.0)
+        status_text = st.empty()
+        success_count = 0
+        error_count = 0
+        for i, url in enumerate(st.session_state.urls):
+            pct = int((i / total_urls) * 100)
+            status_text.markdown(
+                f'<div style="padding:8px 16px;background:#FFF1E8;border-radius:8px;'
+                f'border-left:4px solid #FF671F;margin-bottom:8px;">'
+                f'🔄 <b>Đang crawl</b> — URL {i+1}/{total_urls} ({pct}%)'
+                f'<br><span style="color:#666;font-size:13px;">{url}</span>'
+                f'</div>', unsafe_allow_html=True
+            )
             body: dict[str, Any] = {"url": url, "field_descriptions": field_descriptions}
             if is_file_mode:
                 body["storage_mode"] = "file"
@@ -380,9 +422,11 @@ def _render_step3() -> None:
                 body["dataset_name"] = st.session_state.dataset_name
             result = _api_post("/crawl", body)
             if result is None:
+                error_count += 1
                 continue
             if result.get("_http_error"):
                 st.session_state.run_log.append({"url": url, "status": "error", "detail": result["detail"]})
+                error_count += 1
                 continue
             if not is_file_mode and not dataset_id and result.get("dataset_id"):
                 dataset_id = result["dataset_id"]
@@ -390,7 +434,19 @@ def _render_step3() -> None:
                 if result["file_path"] not in st.session_state.run_file_paths:
                     st.session_state.run_file_paths.append(result["file_path"])
             st.session_state.run_log.append({"url": url, **result})
+            success_count += 1
+            progress.progress((i + 1) / total_urls)
+        pct_final = 100
+        status_text.markdown(
+            f'<div style="padding:8px 16px;background:#E8F5E9;border-radius:8px;'
+            f'border-left:4px solid #1BA672;margin-bottom:8px;">'
+            f'✅ <b>Hoàn thành</b> — {success_count}/{total_urls} URL thành công'
+            f'{f", {error_count} lỗi" if error_count else ""}'
+            f'</div>', unsafe_allow_html=True
+        )
         st.session_state.run_dataset_id = dataset_id
+        st.session_state.is_crawling = False
+        st.rerun()
 
     if st.session_state.run_log:
         st.markdown("**Console log**")
@@ -403,13 +459,26 @@ def _render_step3() -> None:
             review_text = (
                 ' · <span class="mp-status-warn">⚠ cần xem lại</span>' if entry.get("needs_review") else ""
             )
+            rcount = entry.get("record_count", 0)
+            rcount_text = f" · {rcount} records" if rcount else ""
             st.markdown(
-                f'<span class="{css_class}">● {status}</span> — {entry["url"]}{conf_text}{review_text} {detail}',
+                f'<span class="{css_class}">● {status}</span> — {entry["url"]}{rcount_text}{conf_text}{review_text} {detail}',
                 unsafe_allow_html=True,
             )
-            if entry.get("data"):
-                with st.expander(f"Dữ liệu trích xuất — {entry['url']}"):
-                    st.json(entry["data"])
+
+    has_data = bool(st.session_state.run_dataset_id and not is_file_mode) or bool(st.session_state.run_file_paths)
+    if has_data and st.button("📊 Preview Data", type="secondary"):
+        if st.session_state.run_dataset_id and not is_file_mode:
+            all_records = _api_get(f"/datasets/{st.session_state.run_dataset_id}/records?limit=1000") or []
+            if all_records:
+                st.markdown(f"**{len(all_records)} records (tabular)**")
+                preview_rows = [
+                    {"source_url": r["source_url"], "confidence": r.get("confidence"), **r.get("data", {})}
+                    for r in all_records
+                ]
+                st.dataframe(preview_rows, use_container_width=True)
+            else:
+                st.info("Chưa có record nào.")
 
     if st.session_state.run_file_paths:
         st.markdown("**File kết quả**")
@@ -417,10 +486,49 @@ def _render_step3() -> None:
             st.markdown(f"`{file_path}`")
             content = _api_download(f"/exports/{file_path}")
             if content is not None:
+                ext = file_path.lower().rsplit(".", 1)[-1] if "." in file_path else "json"
+                if ext == "json":
+                    mime = "application/json"
+                elif ext == "csv":
+                    mime = "text/csv"
+                elif ext == "xlsx":
+                    mime = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                elif ext == "parquet":
+                    mime = "application/octet-stream"
+                else:
+                    mime = "application/octet-stream"
                 st.download_button(
                     f"⬇ Tải {file_path}", data=content, file_name=file_path.split("/")[-1],
-                    mime="application/json", key=f"dl_{file_path}",
+                    mime=mime, key=f"dl_{file_path}",
                 )
+                if st.button(f"📊 Preview {file_path}", key=f"pv_{file_path}"):
+                    try:
+                        import pandas as pd
+                        import io as _io
+                        if ext == "json":
+                            import json as _json
+                            records = _json.loads(content.decode("utf-8"))
+                            if isinstance(records, list) and records:
+                                st.markdown(f"**{len(records)} records (JSON dict view)**")
+                                st.json(records[:5])
+                                if len(records) > 5:
+                                    st.caption(f"... và {len(records)-5} records nữa")
+                            else:
+                                st.info("File rỗng hoặc không hợp lệ.")
+                        elif ext == "csv":
+                            df = pd.read_csv(_io.BytesIO(content), encoding="utf-8-sig")
+                            st.markdown(f"**{len(df)} rows × {len(df.columns)} cols (tabular)**")
+                            st.dataframe(df, use_container_width=True)
+                        elif ext == "xlsx":
+                            df = pd.read_excel(_io.BytesIO(content), engine="openpyxl")
+                            st.markdown(f"**{len(df)} rows × {len(df.columns)} cols (tabular)**")
+                            st.dataframe(df, use_container_width=True)
+                        elif ext == "parquet":
+                            df = pd.read_parquet(_io.BytesIO(content), engine="pyarrow")
+                            st.markdown(f"**{len(df)} rows × {len(df.columns)} cols (tabular)**")
+                            st.dataframe(df, use_container_width=True)
+                    except Exception as e:
+                        st.error(f"Không đọc được file: {e}")
 
     b1, b2 = st.columns([1, 1])
     if b1.button("← Quay lại"):
@@ -454,6 +562,31 @@ def _records_to_csv(records: list[dict]) -> str:
             **record.get("data", {}),
         }
         writer.writerow(row)
+    # UTF-8 BOM để Excel mở đúng tiếng Việt không bị lỗi font
+    return "\ufeff" + buffer.getvalue()
+
+
+def _records_to_xlsx(records: list[dict]) -> bytes:
+    data_keys: list[str] = []
+    for record in records:
+        for key in record.get("data", {}):
+            if key not in data_keys:
+                data_keys.append(key)
+
+    rows = []
+    for record in records:
+        rows.append({
+            "record_id": record["record_id"],
+            "source_url": record["source_url"],
+            "confidence": record.get("confidence"),
+            "crawled_at": record["crawled_at"],
+            **record.get("data", {}),
+        })
+
+    import pandas as pd
+    df = pd.DataFrame(rows, columns=["record_id", "source_url", "confidence", "crawled_at"] + data_keys)
+    buffer = io.BytesIO()
+    df.to_excel(buffer, index=False, engine="openpyxl")
     return buffer.getvalue()
 
 
@@ -503,6 +636,12 @@ def _render_step4() -> None:
             data=_records_to_csv(records),
             file_name=f"{dataset_id}.csv",
             mime="text/csv",
+        )
+        st.download_button(
+            "⬇ Tải XLSX",
+            data=_records_to_xlsx(records),
+            file_name=f"{dataset_id}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         with st.expander("Evidence (đoạn gốc AI trích xuất)"):
             for r in records:

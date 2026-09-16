@@ -34,6 +34,8 @@ _TAGS_TO_STRIP = (
 
 _BLOCK_TAGS_FOR_TEXT = ("p", "div", "li", "section", "article", "br")
 
+_RENDERABLE_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "table", "div", "span")
+
 
 @dataclass(frozen=True)
 class CleanedDocument:
@@ -70,13 +72,10 @@ def clean_html(html: str) -> CleanedDocument:
 def _render_markdown(root: Tag) -> str:
     lines: list[str] = []
 
-    for element in root.find_all(
-        ["h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "table"],
-        recursive=True,
-    ):
-        # Bỏ qua các element nằm lồng trong 1 element đã render rồi (vd. <p> trong <li>
-        # của <ul> đã xử lý), tránh lặp nội dung.
-        if _has_ancestor_in(element, ("ul", "ol", "table")):
+    for element in root.find_all(_RENDERABLE_TAGS, recursive=True):
+        # Bỏ qua các element nằm lồng trong element đã render rồi (p, ul, ol,
+        # table) — tránh lặp nội dung (vd. <span> trong <p> đã xử lý).
+        if _has_ancestor_in(element, ("p", "ul", "ol", "table")):
             continue
 
         if element.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
@@ -96,6 +95,15 @@ def _render_markdown(root: Tag) -> str:
             table_md = _render_table(element)
             if table_md:
                 lines.append(table_md)
+        elif element.name in ("div", "span"):
+            # Chỉ render "leaf" div/span — không chứa element renderable con
+            # (h1-h6, p, ul, ol, table, div, span). Container div/span bị skip
+            # để tránh trùng lặp — các element con sẽ được render riêng.
+            if element.find(_RENDERABLE_TAGS, recursive=True):
+                continue
+            text = _clean_text(element.get_text(" "))
+            if text:
+                lines.append(text)
 
     if lines:
         return "\n\n".join(lines).strip()
