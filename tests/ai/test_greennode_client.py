@@ -79,6 +79,22 @@ def test_extract_missing_field_in_response_defaults_to_zero_confidence():
     assert result.fields["unit"].confidence == 0.0
 
 
+def test_extract_matches_field_name_case_insensitively():
+    """Model trả key khác hoa/thường so với tên field yêu cầu (vd. "quote" thay
+    vì "Quote") vẫn phải khớp được — tránh bug thật gặp phải: field bị rơi về
+    None/confidence 0 dù model đã trích đúng giá trị, chỉ vì lệch cách viết hoa."""
+    ai_json = {"quote": {"value": "Đời là bể khổ", "confidence": 0.9, "evidence": "e"}}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_openai_response(json.dumps(ai_json)))
+
+    client = _make_client(handler)
+    result = client.extract("nội dung", {"Quote": "câu trích dẫn"})
+
+    assert result.fields["Quote"].value == "Đời là bể khổ"
+    assert result.fields["Quote"].confidence == 0.9
+
+
 def test_extract_clamps_out_of_range_confidence():
     ai_json = {"price": {"value": 100, "confidence": 1.7, "evidence": "e"}}
 

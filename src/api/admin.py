@@ -1,10 +1,11 @@
-"""Panel admin nội bộ — "AI gợi ý sửa lỗi" cho scheduled_jobs bị lỗi.
+"""Panel admin nội bộ — "AI gợi ý sửa lỗi" cho scheduled_jobs/crawl thủ công
+bị lỗi + quản lý cookie đăng nhập theo domain.
 
 **MÀN NỘI BỘ, KHÔNG dành cho người dùng cuối** — tách biệt hoàn toàn khỏi
 luồng crawl/dataset chính (`src/api/main.py`), route dưới prefix `/admin`.
-MVP hiện tại KHÔNG có authentication (chấp nhận được cho demo/hackathon theo
-yêu cầu tính năng), nhưng route KHÔNG được lộ ra UI người dùng thường — chỉ
-truy cập trực tiếp qua URL admin (Streamlit: `ui/pages/9_Admin_Debug.py`).
+Toàn bộ router yêu cầu HTTP Basic Auth (`ADMIN_USERNAME`/`ADMIN_PASSWORD`
+trong `.env`, xem `_make_admin_auth_dependency`) — mặc định TỪ CHỐI mọi
+request nếu chưa cấu hình, không mở cửa ngầm định.
 
 Ràng buộc bảo mật BẮT BUỘC (xem `src/ai/debug_assistant.py`):
 - AI CHỈ trả về text gợi ý (chẩn đoán + patch đề xuất + rủi ro) — route này
@@ -17,10 +18,13 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import secrets
 from pathlib import Path
 from typing import Callable
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
+from pydantic import BaseModel
 
 from ..ai.debug_assistant import DebugSuggestion, extract_related_files_from_traceback, suggest_fix
 from ..storage.base import StorageEngine
@@ -29,6 +33,39 @@ logger = logging.getLogger(__name__)
 
 _MAX_RELATED_CODE_CHARS = 20_000
 _REPO_ROOT = Path(__file__).resolve().parent.parent.parent
+
+
+class SiteCredentialRequest(BaseModel):
+    domain: str
+    cookie_header: str
+
+
+_basic_auth = HTTPBasic()
+
+
+def _make_admin_auth_dependency(admin_username: str, admin_password: str):
+    """HTTP Basic Auth cho toàn bộ router `/admin/*` — mặc định TỪ CHỐI (401)
+    nếu `ADMIN_USERNAME`/`ADMIN_PASSWORD` chưa cấu hình trong `.env`, KHÔNG
+    mở cửa ngầm định (nhất quán với nguyên tắc "mặc định luôn kiểm tra, không
+    phải toggle im lặng" ở CLAUDE.md mục 3, áp dụng tương tự cho bảo mật admin).
+    Dùng `secrets.compare_digest` để so sánh không lộ thời gian xử lý (chặn
+    timing attack đoán mật khẩu ký tự từng ký tự)."""
+
+    def _check(credentials: HTTPBasicCredentials = Depends(_basic_auth)) -> None:
+        if not admin_username or not admin_password:
+            raise HTTPException(
+                status_code=401,
+                detail="Admin panel chưa cấu hình ADMIN_USERNAME/ADMIN_PASSWORD trong .env",
+                headers={"WWW-Authenticate": "Basic"},
+            )
+        valid_user = secrets.compare_digest(credentials.username, admin_username)
+        valid_pass = secrets.compare_digest(credentials.password, admin_password)
+        if not (valid_user and valid_pass):
+            raise HTTPException(
+                status_code=401, detail="Sai username/password", headers={"WWW-Authenticate": "Basic"}
+            )
+
+    return _check
 
 
 def _read_related_code_snippets(traceback_text: str, repo_root: Path) -> str:
@@ -69,15 +106,31 @@ def create_admin_router(
     ai_debug_timeout_seconds: float = 30.0,
     repo_root: Path = _REPO_ROOT,
     suggest_fix_fn: Callable[..., DebugSuggestion] = suggest_fix,
+    admin_username: str = "",
+    admin_password: str = "",
 ) -> APIRouter:
     """`suggest_fix_fn` cho phép inject test double — không cần gọi AI thật để
-    test route (CLAUDE.md mục 6)."""
-    router = APIRouter(prefix="/admin", tags=["admin-debug-internal"])
+    test route (CLAUDE.md mục 6). `admin_username`/`admin_password` rỗng =
+    router từ chối mọi request (401) — xem `_make_admin_auth_dependency`."""
+    router = APIRouter(
+        prefix="/admin",
+        tags=["admin-debug-internal"],
+        dependencies=[Depends(_make_admin_auth_dependency(admin_username, admin_password))],
+    )
 
     @router.get("/errors")
-    def list_errors() -> list[dict]:
-        jobs = [job for job in storage.list_scheduled_jobs() if job.last_status == "error"]
-        return [dataclasses.asdict(job) for job in jobs]
+    def list_errors() -> dict:
+        """Gộp 2 nguồn lỗi: job lịch chạy tự động bị lỗi (`scheduled_jobs`) VÀ
+        lần "Chạy crawl" thủ công bị lỗi gần đây (`audit_log`, event_type
+        `crawl_failed` — xem `src/pipeline.py`/`src/api/main.py`), để admin
+        không bỏ sót lỗi crawl 1 lần chỉ vì nó không thuộc job lịch nào."""
+        jobs = [dataclasses.asdict(job) for job in storage.list_scheduled_jobs() if job.last_status == "error"]
+        manual_failures = [
+            dataclasses.asdict(entry)
+            for entry in storage.list_audit_log(limit=50)
+            if entry.event_type == "crawl_failed"
+        ]
+        return {"scheduled_job_errors": jobs, "manual_crawl_errors": manual_failures}
 
     @router.post("/errors/{job_id}/suggest-fix")
     def suggest_fix_for_job(job_id: str) -> dict:
@@ -111,5 +164,35 @@ def create_admin_router(
         if not suggestion.success:
             raise HTTPException(status_code=502, detail=suggestion.error or "Gọi AI thất bại")
         return {"content": suggestion.content}
+
+    # -- site_credentials (cookie đăng nhập thủ công theo domain, CLAUDE.md --
+    # mục "Fetch + clean": chỉ code fetch bằng cookie đã lưu, KHÔNG tự động
+    # đăng nhập/điền form — xem docstring HttpxFetcher.credential_provider).
+    @router.get("/site-credentials")
+    def list_site_credentials() -> list[dict]:
+        creds = storage.list_site_credentials()
+        # KHÔNG trả cookie_header thật về response — chỉ cho biết domain nào
+        # đã có cookie + lúc cập nhật, tránh lộ cookie qua log/network tab khi
+        # danh sách được hiển thị lại trên UI.
+        return [
+            {"domain": c.domain, "updated_at": c.updated_at.isoformat(), "cookie_length": len(c.cookie_header)}
+            for c in creds
+        ]
+
+    @router.post("/site-credentials")
+    def save_site_credential(req: SiteCredentialRequest) -> dict:
+        if not req.domain.strip() or not req.cookie_header.strip():
+            raise HTTPException(status_code=400, detail="domain và cookie_header không được rỗng")
+        saved = storage.save_site_credential(req.domain.strip(), req.cookie_header.strip())
+        storage.add_audit_log(event_type="site_credential_saved", detail={"domain": saved.domain})
+        return {"domain": saved.domain, "updated_at": saved.updated_at.isoformat()}
+
+    @router.delete("/site-credentials/{domain}")
+    def delete_site_credential(domain: str) -> dict:
+        if storage.get_site_credential(domain) is None:
+            raise HTTPException(status_code=404, detail="Chưa có cookie lưu cho domain này")
+        storage.delete_site_credential(domain)
+        storage.add_audit_log(event_type="site_credential_deleted", detail={"domain": domain})
+        return {"status": "deleted", "domain": domain}
 
     return router

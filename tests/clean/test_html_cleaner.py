@@ -82,6 +82,30 @@ def test_length_fields_are_populated():
     assert doc.cleaned_length > 0
 
 
+def test_div_span_layout_content_is_not_lost_when_page_also_has_unrelated_heading():
+    """Tái hiện bug thật gặp phải với quotes.toscrape.com: nội dung chính nằm
+    trong div/span (không có <p> bao quanh), nhưng trang có sẵn <h1>/<p> khác
+    KHÔNG liên quan (vd. tiêu đề trang, link "Login") ở chỗ khác. Trước đây
+    code coi "đã tìm thấy heading/p nào đó" là đủ và bỏ qua toàn bộ div/span,
+    khiến AI nhận markdown gần như rỗng dù trang có đầy đủ dữ liệu."""
+    html = """
+    <html><body>
+      <h1>Quotes to Scrape</h1>
+      <p>Login</p>
+      <div class="quote">
+        <span class="text">"Đời là bể khổ."</span>
+        <span>by <small class="author">Albert Einstein</small></span>
+        <div class="tags">Tags: change, thinking</div>
+      </div>
+    </body></html>
+    """
+    doc = clean_html(html)
+
+    assert "Đời là bể khổ" in doc.markdown
+    assert "Albert Einstein" in doc.markdown
+    assert "change" in doc.markdown
+
+
 def test_empty_html_does_not_crash():
     doc = clean_html("")
 

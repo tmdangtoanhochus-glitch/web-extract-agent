@@ -16,6 +16,7 @@ from .base import (
     ExtractionStrategy,
     Record,
     ScheduledJob,
+    SiteCredential,
     StorageEngine,
     utcnow,
 )
@@ -66,6 +67,7 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     file_path TEXT,
     write_mode TEXT,
     key_field TEXT,
+    image_fields TEXT,
     trigger_type TEXT NOT NULL,
     trigger_args TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -82,6 +84,12 @@ CREATE TABLE IF NOT EXISTS audit_log (
     occurred_at TEXT NOT NULL,
     detail TEXT
 );
+
+CREATE TABLE IF NOT EXISTS site_credentials (
+    domain TEXT PRIMARY KEY,
+    cookie_header TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 """
 
 # Cột thêm sau này cho các bảng đã tồn tại — dùng để migrate nhẹ các DB cục bộ
@@ -97,6 +105,7 @@ _MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
         "file_path": "TEXT",
         "write_mode": "TEXT",
         "key_field": "TEXT",
+        "image_fields": "TEXT",
         "last_error_traceback": "TEXT",
     },
     "records": {
@@ -316,15 +325,17 @@ class SQLiteStorage(StorageEngine):
         file_path: Optional[str] = None,
         write_mode: Optional[str] = None,
         key_field: Optional[str] = None,
+        image_fields: Optional[list[str]] = None,
     ) -> ScheduledJob:
         job_id = uuid.uuid4().hex
         created_at = utcnow()
+        image_fields = image_fields or []
         self._conn.execute(
             "INSERT INTO scheduled_jobs (job_id, dataset_id, url, field_descriptions, "
-            "storage_mode, file_path, write_mode, key_field, "
+            "storage_mode, file_path, write_mode, key_field, image_fields, "
             "trigger_type, trigger_args, enabled, created_at, last_run_at, last_status, "
             "last_error_traceback) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, NULL)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, NULL)",
             (
                 job_id,
                 dataset_id,
@@ -334,6 +345,7 @@ class SQLiteStorage(StorageEngine):
                 file_path,
                 write_mode,
                 key_field,
+                json.dumps(image_fields),
                 trigger_type,
                 json.dumps(trigger_args),
                 created_at.isoformat(),
@@ -349,6 +361,7 @@ class SQLiteStorage(StorageEngine):
             file_path=file_path,
             write_mode=write_mode,
             key_field=key_field,
+            image_fields=image_fields,
             trigger_type=trigger_type,
             trigger_args=trigger_args,
             enabled=True,
@@ -413,6 +426,32 @@ class SQLiteStorage(StorageEngine):
         rows = self._conn.execute(query, params).fetchall()
         return [_row_to_audit_log(row) for row in rows]
 
+    # -- site_credentials (cookie đăng nhập thủ công theo domain) -----------
+    def save_site_credential(self, domain: str, cookie_header: str) -> SiteCredential:
+        updated_at = utcnow()
+        self._conn.execute(
+            "INSERT INTO site_credentials (domain, cookie_header, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(domain) DO UPDATE SET cookie_header = excluded.cookie_header, "
+            "updated_at = excluded.updated_at",
+            (domain, cookie_header, updated_at.isoformat()),
+        )
+        self._conn.commit()
+        return SiteCredential(domain=domain, cookie_header=cookie_header, updated_at=updated_at)
+
+    def get_site_credential(self, domain: str) -> Optional[SiteCredential]:
+        row = self._conn.execute(
+            "SELECT * FROM site_credentials WHERE domain = ?", (domain,)
+        ).fetchone()
+        return _row_to_site_credential(row) if row else None
+
+    def list_site_credentials(self) -> list[SiteCredential]:
+        rows = self._conn.execute("SELECT * FROM site_credentials ORDER BY domain").fetchall()
+        return [_row_to_site_credential(row) for row in rows]
+
+    def delete_site_credential(self, domain: str) -> None:
+        self._conn.execute("DELETE FROM site_credentials WHERE domain = ?", (domain,))
+        self._conn.commit()
+
 
 def _row_to_scheduled_job(row: sqlite3.Row) -> ScheduledJob:
     return ScheduledJob(
@@ -424,6 +463,7 @@ def _row_to_scheduled_job(row: sqlite3.Row) -> ScheduledJob:
         file_path=row["file_path"],
         write_mode=row["write_mode"],
         key_field=row["key_field"],
+        image_fields=json.loads(row["image_fields"]) if row["image_fields"] else [],
         trigger_type=row["trigger_type"],
         trigger_args=json.loads(row["trigger_args"]),
         enabled=bool(row["enabled"]),
@@ -468,6 +508,14 @@ def _row_to_strategy(row: sqlite3.Row) -> ExtractionStrategy:
         field_name=row["field_name"],
         selector=row["selector"],
         sample_value=row["sample_value"],
+        updated_at=datetime.fromisoformat(row["updated_at"]),
+    )
+
+
+def _row_to_site_credential(row: sqlite3.Row) -> SiteCredential:
+    return SiteCredential(
+        domain=row["domain"],
+        cookie_header=row["cookie_header"],
         updated_at=datetime.fromisoformat(row["updated_at"]),
     )
 

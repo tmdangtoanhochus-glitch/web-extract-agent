@@ -67,6 +67,7 @@ class CrawlScheduler:
         file_path: Optional[str] = None,
         write_mode: Optional[str] = None,
         key_field: Optional[str] = None,
+        image_fields: Optional[list[str]] = None,
     ) -> ScheduledJob:
         """Tạo job mới: lưu vào storage TRƯỚC (không mất job nếu crash ngay
         sau khi đăng ký với APScheduler), rồi đăng ký chạy thật. `dataset_id`
@@ -81,6 +82,7 @@ class CrawlScheduler:
             file_path=file_path,
             write_mode=write_mode,
             key_field=key_field,
+            image_fields=image_fields,
         )
         self._register_job(job)
         return job
@@ -124,6 +126,7 @@ class CrawlScheduler:
                     ai_client=self._ai_client,
                     storage=self._storage,
                     confidence_threshold=self._confidence_threshold,
+                    image_fields=job.image_fields,
                 )
                 status = file_result.status
             else:
@@ -135,6 +138,7 @@ class CrawlScheduler:
                     ai_client=self._ai_client,
                     storage=self._storage,
                     confidence_threshold=self._confidence_threshold,
+                    image_fields=job.image_fields,
                 )
                 status = db_result.status
         except Exception:

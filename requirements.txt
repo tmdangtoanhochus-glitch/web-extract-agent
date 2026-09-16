@@ -16,6 +16,9 @@ httpx==0.28.1
 playwright==1.62.0
 beautifulsoup4==4.15.0
 
+# Storage (Postgres — lựa chọn thay SQLite qua DB_BACKEND=postgres, xem README)
+psycopg2-binary==2.9.11
+
 # Scheduler
 APScheduler==3.11.3
 

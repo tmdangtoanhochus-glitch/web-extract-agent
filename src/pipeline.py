@@ -31,6 +31,7 @@ from .extract.structured_data import extract_structured_data, match_field
 from .fetch.base import FetchEngine, FetchResult, domain_of
 from .storage.base import Dataset, Record, StorageEngine
 from .storage.file_writer import EXPORTS_ROOT, InvalidFilePathError, InvalidKeyFieldError, write_record
+from .storage.image_downloader import IMAGES_ROOT, download_image
 
 logger = logging.getLogger(__name__)
 
@@ -76,12 +77,22 @@ def fetch_and_clean(url: str, fetcher: FetchEngine) -> FetchAndClean:
     """Fetch 1 URL và làm sạch HTML nếu thành công. `fetch_result.success`
     quyết định có tiếp tục được không — tầng gọi tự kiểm tra trước khi dùng
     `markdown`/`content_hash` (rỗng nếu fetch thất bại)."""
+    logger.info("[%s] Bắt đầu fetch...", url)
     fetch_result = fetcher.fetch(url)
     if not fetch_result.success or fetch_result.html is None:
+        logger.warning("[%s] Fetch thất bại: %s", url, fetch_result.error)
         return FetchAndClean(fetch_result=fetch_result)
 
+    logger.info(
+        "[%s] Fetch thành công (status=%s, %d bytes HTML) — đang làm sạch...",
+        url, fetch_result.status_code, len(fetch_result.html),
+    )
     cleaned = clean_html(fetch_result.html)
     content_hash = hashlib.sha256(cleaned.markdown.encode("utf-8")).hexdigest()
+    logger.info(
+        "[%s] Làm sạch xong — markdown còn %d ký tự (từ %d ký tự HTML gốc).",
+        url, len(cleaned.markdown), len(fetch_result.html),
+    )
     return FetchAndClean(fetch_result=fetch_result, markdown=cleaned.markdown, content_hash=content_hash)
 
 
@@ -96,6 +107,7 @@ def ai_extract(
     """Trích xuất field theo thứ tự ưu tiên: structured data (JSON-LD/Open
     Graph, CLAUDE.md mục 2) → cache chiến lược theo domain (CLAUDE.md mục 5)
     → AI cho field còn lại. Dùng chung cho cả luồng DB và luồng file."""
+    logger.info("[%s] Bắt đầu trích xuất %d field: %s", url, len(field_descriptions), list(field_descriptions))
     structured = extract_structured_data(html)
     domain = domain_of(url)
     resolved_fields: dict[str, FieldExtraction] = {}
@@ -104,6 +116,7 @@ def ai_extract(
     for name, description in field_descriptions.items():
         matched = match_field(name, structured)
         if matched is not None:
+            logger.info("[%s] Field '%s' lấy được từ structured data (%s), KHÔNG cần gọi AI.", url, name, matched.source)
             resolved_fields[name] = FieldExtraction(
                 value=matched.value, confidence=1.0, evidence=f"{matched.source}={matched.value!r}"
             )
@@ -117,6 +130,10 @@ def ai_extract(
             apply_selector(html, cached_strategy.selector) if cached_strategy is not None else None
         )
         if cached_value is not None:
+            logger.info(
+                "[%s] Field '%s' lấy được từ cache selector theo domain (%s), KHÔNG cần gọi AI.",
+                url, name, domain,
+            )
             resolved_fields[name] = FieldExtraction(
                 value=cached_value,
                 confidence=0.9,
@@ -132,10 +149,18 @@ def ai_extract(
         remaining_descriptions[name] = description
 
     if remaining_descriptions:
+        logger.info(
+            "[%s] Gửi nội dung trang (%d ký tự markdown) cho AI trích xuất %d field còn lại: %s",
+            url, len(markdown), len(remaining_descriptions), list(remaining_descriptions),
+        )
         extraction = ai_client.extract(markdown, remaining_descriptions)
         if not extraction.success:
-            logger.warning("AI extract thất bại cho %s: %s", url, extraction.error)
+            logger.warning("[%s] AI extract thất bại: %s", url, extraction.error)
             return AiExtractResult(fields=resolved_fields, success=False, error=extraction.error)
+        logger.info(
+            "[%s] AI trả về xong — confidence từng field: %s",
+            url, {name: fe.confidence for name, fe in extraction.fields.items()},
+        )
         resolved_fields.update(extraction.fields)
 
         # AI vừa định vị được field mới (hoặc định vị lại field cache cũ đã
@@ -155,6 +180,36 @@ def ai_extract(
     return AiExtractResult(fields=resolved_fields, success=True)
 
 
+def _apply_image_downloads(
+    data: dict[str, Any],
+    image_fields: list[str],
+    record_key: str,
+    images_root: Path,
+) -> dict[str, Any]:
+    """Tải file cho các field được người dùng đánh dấu tường minh là ảnh
+    (`image_fields`) — code (rule-based) quyết định hành động "tải file về",
+    AI chỉ trả URL như 1 field bình thường (CLAUDE.md mục 1). Thay giá trị
+    field bằng đường dẫn local (tương đối trong `images_root`) nếu tải thành
+    công; giữ nguyên URL gốc + ghi log cảnh báo nếu tải lỗi — KHÔNG chặn cả
+    record chỉ vì 1 ảnh tải lỗi, nhất quán với cách `ai_extract()` xử lý lỗi
+    từng field riêng lẻ."""
+    updated = dict(data)
+    for field_name in image_fields:
+        value = updated.get(field_name)
+        if not value:
+            continue
+        result = download_image(
+            str(value), record_key=record_key, field_name=field_name, images_root=images_root
+        )
+        if result.success:
+            updated[field_name] = result.local_path
+        else:
+            logger.warning(
+                "Tải ảnh thất bại cho field '%s' (url=%s): %s", field_name, value, result.error
+            )
+    return updated
+
+
 def run_crawl_job(
     url: str,
     field_descriptions: dict[str, str],
@@ -164,6 +219,8 @@ def run_crawl_job(
     dataset_id: Optional[str] = None,
     dataset_name: Optional[str] = None,
     confidence_threshold: float = _DEFAULT_CONFIDENCE_THRESHOLD,
+    image_fields: Optional[list[str]] = None,
+    images_root: Path = IMAGES_ROOT,
 ) -> PipelineResult:
     """Crawl 1 URL và lưu kết quả vào DB.
 
@@ -215,6 +272,8 @@ def run_crawl_job(
         return PipelineResult(status="extract_failed", dataset=dataset, detail=extraction.error)
 
     data = {name: fe.value for name, fe in extraction.fields.items()}
+    if image_fields:
+        data = _apply_image_downloads(data, image_fields, record_key=dataset.dataset_id, images_root=images_root)
     evidence = {name: fe.evidence for name, fe in extraction.fields.items() if fe.evidence}
     confidences = [fe.confidence for fe in extraction.fields.values()]
     overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
@@ -227,6 +286,10 @@ def run_crawl_job(
         evidence=evidence,
         confidence=overall_confidence,
         needs_review=overall_confidence < confidence_threshold,
+    )
+    logger.info(
+        "[%s] Đã lưu record %s vào dataset %s (confidence=%.2f, needs_review=%s).",
+        url, record.record_id, dataset.dataset_id, overall_confidence, record.needs_review,
     )
     return PipelineResult(status="saved", dataset=dataset, record=record)
 
@@ -242,6 +305,8 @@ def run_file_crawl_job(
     key_field: Optional[str] = None,
     exports_root: Path = EXPORTS_ROOT,
     confidence_threshold: float = _DEFAULT_CONFIDENCE_THRESHOLD,
+    image_fields: Optional[list[str]] = None,
+    images_root: Path = IMAGES_ROOT,
 ) -> FileCrawlResult:
     """Crawl 1 URL và ghi kết quả ra file JSON (`src/storage/file_writer.py`)
     — KHÔNG dedup theo content_hash, KHÔNG schema-match, KHÔNG tạo dataset
@@ -262,6 +327,8 @@ def run_file_crawl_job(
         return FileCrawlResult(status="extract_failed", detail=extraction.error)
 
     data = {name: fe.value for name, fe in extraction.fields.items()}
+    if image_fields:
+        data = _apply_image_downloads(data, image_fields, record_key=domain_of(url), images_root=images_root)
     evidence = {name: fe.evidence for name, fe in extraction.fields.items() if fe.evidence}
     confidences = [fe.confidence for fe in extraction.fields.values()]
     overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
@@ -289,6 +356,10 @@ def run_file_crawl_job(
         logger.warning("Cấu hình file không hợp lệ cho %s: %s", url, exc)
         return FileCrawlResult(status="invalid_file_config", detail=str(exc))
 
+    logger.info(
+        "[%s] Đã ghi record vào file %s (confidence=%.2f, needs_review=%s).",
+        url, write_result.file_path, overall_confidence, needs_review,
+    )
     return FileCrawlResult(
         status="saved",
         file_path=write_result.file_path,

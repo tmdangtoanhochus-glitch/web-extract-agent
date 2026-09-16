@@ -28,3 +28,29 @@ services:
     depends_on:
       - api
     restart: unless-stopped
+
+  # Chỉ khởi động khi cần (profile "postgres") — mặc định `docker compose up`
+  # KHÔNG chạy service này, giữ nguyên luồng SQLite cũ (DB_BACKEND=sqlite mặc
+  # định, xem src/config.py). Dùng khi muốn chạy app với DB_BACKEND=postgres,
+  # hoặc chạy test PostgresStorage (tests/storage/test_postgres_storage.py):
+  #   docker compose --profile postgres up -d postgres
+  postgres:
+    image: postgres:16-alpine
+    profiles: ["postgres"]
+    environment:
+      - POSTGRES_DB=web_extract_agent
+      - POSTGRES_USER=web_extract_agent
+      - POSTGRES_PASSWORD=web_extract_agent_dev_only
+    ports:
+      - "5432:5432"  # để venv/test chạy trực tiếp trên máy host kết nối được
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U web_extract_agent"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+volumes:
+  postgres_data:

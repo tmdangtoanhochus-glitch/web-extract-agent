@@ -22,9 +22,18 @@ class Settings:
     fetch_user_agent: str
     fetch_default_delay_seconds: float
     fetch_respect_robots_txt: bool
+    db_backend: str
     db_path: str
+    database_url: str
     api_port: int
     log_level: str
+    admin_username: str
+    admin_password: str
+    runner_enabled: bool = False
+    runner_ai_enabled: bool = False
+    runner_db_path: str = "./data/runner.db"
+    runner_database_url: str = ""
+    runner_data_root: str = "./data/runner"
 
 
 def load_settings() -> Settings:
@@ -51,9 +60,24 @@ def load_settings() -> Settings:
         fetch_user_agent=os.environ.get("FETCH_USER_AGENT", "web-extract-agent/0.1"),
         fetch_default_delay_seconds=float(os.environ.get("FETCH_DEFAULT_DELAY_SECONDS", "2")),
         fetch_respect_robots_txt=_parse_bool(os.environ.get("FETCH_RESPECT_ROBOTS_TXT", "true")),
+        # DB_BACKEND "sqlite" (mặc định, dev/MVP) hay "postgres" (production,
+        # vd. GreenNode) — DATABASE_URL chỉ bắt buộc khi chọn "postgres" (xem
+        # `_build_default_app()` trong `src/api/main.py`).
+        db_backend=os.environ.get("DB_BACKEND", "sqlite"),
         db_path=os.environ.get("DB_PATH", "./data/app.db"),
+        database_url=os.environ.get("DATABASE_URL", ""),
         api_port=int(os.environ.get("API_PORT", "8000")),
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
+        # Basic Auth cho panel admin nội bộ (/admin/*, ui/pages/9_Admin_Debug.py)
+        # — rỗng nếu chưa set trong .env (xem cảnh báo log lúc khởi động app ở
+        # src/api/main.py: KHÔNG chạy production mà thiếu 2 biến này).
+        admin_username=os.environ.get("ADMIN_USERNAME", ""),
+        admin_password=os.environ.get("ADMIN_PASSWORD", ""),
+        runner_enabled=_parse_bool(os.environ.get("RUNNER_ENABLED", "false")),
+        runner_ai_enabled=_parse_bool(os.environ.get("RUNNER_AI_ENABLED", "false")),
+        runner_db_path=os.environ.get("RUNNER_DB_PATH", "./data/runner.db"),
+        runner_database_url=os.environ.get("RUNNER_DATABASE_URL", ""),
+        runner_data_root=os.environ.get("RUNNER_DATA_ROOT", "./data/runner"),
     )
 
 

@@ -20,13 +20,51 @@ Xem `CLAUDE.md` để biết đầy đủ kiến trúc, nguyên tắc thiết k�
 - UI Streamlit đầy đủ 5 bước (nguồn → field → chạy & kết quả → dữ liệu đã lưu → lịch).
 - Docker image riêng cho Runtime API/UI để deploy lên GreenNode AgentBase (xem mục
   "Deploy lên GreenNode") — **chưa build/test thật với Docker daemon**, mới review tĩnh.
+- Lựa chọn PostgreSQL thay SQLite (`DB_BACKEND=postgres`, xem mục "Database" bên dưới) —
+  **chưa verify với Postgres thật** (sandbox dev không pull được image Docker Hub), cần tự
+  chạy `docker compose --profile postgres up -d postgres` rồi `pytest
+  tests/storage/test_postgres_storage.py` để xác nhận.
+- Tải ảnh tài sản về `data/images/` khi đánh dấu field là ảnh (checkbox ở Bước 2/5).
+- Crawl trang cần đăng nhập bằng cookie/session dán thủ công theo domain (panel admin).
+- Panel admin bảo vệ bằng HTTP Basic Auth (`ADMIN_USERNAME`/`ADMIN_PASSWORD`).
+- Log tiến trình crawl theo từng bước (`LOG_LEVEL=INFO` để xem trong console/docker logs).
 
 **Đang làm dở / chưa làm:**
 - Fetch site JS-heavy bằng Playwright — đã có adapter, chưa bật làm mặc định trong app.
 - Chưa xác nhận URL/format registry thật của GreenNode AgentBase (đang để placeholder
   trong README mục Deploy).
+- Vị trí dạng bản đồ JS (Google Maps SDK) — chưa làm; lấy địa chỉ/tên dạng text (không
+  phải toạ độ) đã dùng được ngay qua field mô tả bình thường, không cần code thêm.
 - Data Dictionary / Data Lineage, visual selector, chuyển UI sang React — chưa làm, xem
   `CLAUDE.md` mục "Việc CHƯA làm trong MVP".
+
+## Database (SQLite mặc định, PostgreSQL tuỳ chọn)
+
+```env
+# .env — mặc định SQLite, không cần khai báo gì thêm
+DB_BACKEND=sqlite
+DB_PATH=./data/app.db
+
+# Hoặc dùng Postgres (vd. GreenNode managed Postgres, hoặc service `postgres`
+# trong docker-compose khi chạy `docker compose --profile postgres up -d postgres`)
+DB_BACKEND=postgres
+DATABASE_URL=postgresql://web_extract_agent:web_extract_agent_dev_only@localhost:5432/web_extract_agent
+```
+Cả 2 cùng implement `StorageEngine` — đổi backend chỉ cần sửa `.env`, không đổi code gọi.
+
+## Panel admin (Basic Auth) + crawl trang cần đăng nhập
+
+```env
+# .env — BẮT BUỘC set cả 2 để dùng panel admin (/admin/*, ui/pages/9_Admin_Debug.py)
+# — thiếu 1 trong 2 thì panel TỪ CHỐI mọi request (401), không mở cửa ngầm định.
+ADMIN_USERNAME=
+ADMIN_PASSWORD=
+```
+
+Panel admin (tab "🔑 Cookie đăng nhập theo domain") cho phép dán cookie/session đã đăng
+nhập sẵn (tự đăng nhập bằng trình duyệt thật, copy cookie từ DevTools) cho 1 domain cần
+đăng nhập mới crawl được — hệ thống chỉ gắn header `Cookie` vào request khi fetch domain
+đó, KHÔNG tự động đăng nhập/điền form login. Cookie hết hạn thì tự vào panel cập nhật lại.
 
 ## Setup môi trường lần đầu ở máy mới
 
@@ -154,3 +192,8 @@ lý do rõ ràng và được ghi log lại tường minh.
 Xem mục "Nguyên tắc thiết kế bắt buộc" trong `CLAUDE.md` — tóm tắt: fetch/clean/AI/storage
 tách rời theo adapter pattern, AI chỉ trích xuất chứ không tự quyết định nghiệp vụ, dữ liệu
 lưu dạng `dataset` + JSON linh hoạt thay vì tạo bảng SQL riêng từng loại.
+# Runner local
+
+Hướng dẫn bật Runner, tạo tài khoản và chạy agent: [Runner setup](docs/RUNNER_SETUP.md).
+Runner mặc định tắt. Bản tích hợp hiện hỗ trợ workbook local/Hybrid và summary;
+Record local và Describe AI xuất workbook nháp đã có; Inspector/AI repair chưa triển khai.

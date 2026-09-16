@@ -47,12 +47,18 @@ class _FakeAIClient(AIClient):
         )
 
 
+_ADMIN_AUTH = ("admin", "test-admin-pass")
+
+
 @pytest.fixture
 def client():
     fetcher = _FakeFetcher()
     ai_client = _FakeAIClient()
     storage = SQLiteStorage(":memory:")
-    app = create_app(fetcher=fetcher, ai_client=ai_client, storage=storage)
+    app = create_app(
+        fetcher=fetcher, ai_client=ai_client, storage=storage,
+        admin_username=_ADMIN_AUTH[0], admin_password=_ADMIN_AUTH[1],
+    )
     return TestClient(app)
 
 
@@ -549,7 +555,42 @@ def test_create_schedule_file_mode_invalid_write_mode_returns_400(client):
 
 # ---- panel admin (/admin/errors, xem tests/api/test_admin.py cho chi tiết) --
 def test_admin_errors_route_is_mounted(client):
-    response = client.get("/admin/errors")
+    response = client.get("/admin/errors", auth=_ADMIN_AUTH)
 
     assert response.status_code == 200
-    assert response.json() == []
+    assert response.json() == {"scheduled_job_errors": [], "manual_crawl_errors": []}
+
+
+def test_admin_errors_route_requires_auth(client):
+    response = client.get("/admin/errors")
+
+    assert response.status_code == 401
+
+
+def test_manual_crawl_failure_is_logged_to_audit_log_for_admin_panel():
+    """Lỗi "Chạy crawl" thủ công (502 fetch_failed/extract_failed) phải ghi
+    vào audit_log để panel admin thấy lại được — trước đây bị bỏ sót hoàn
+    toàn, chỉ scheduled_jobs mới lên /admin/errors."""
+    storage = SQLiteStorage(":memory:")
+    app = create_app(
+        fetcher=_FakeFetcher(html=None),  # html=None -> fetch luôn fail (error="not_found")
+        ai_client=_FakeAIClient(),
+        storage=storage,
+        admin_username=_ADMIN_AUTH[0], admin_password=_ADMIN_AUTH[1],
+    )
+    client = TestClient(app)
+
+    response = client.post(
+        "/crawl",
+        json={
+            "url": "https://batdongsan.com.vn/x",
+            "field_descriptions": {"price": "giá"},
+            "dataset_name": "Test",
+        },
+    )
+    assert response.status_code == 502
+
+    errors = client.get("/admin/errors", auth=_ADMIN_AUTH).json()
+    assert len(errors["manual_crawl_errors"]) == 1
+    assert errors["manual_crawl_errors"][0]["detail"]["url"] == "https://batdongsan.com.vn/x"
+    assert errors["manual_crawl_errors"][0]["detail"]["error"] == "not_found"

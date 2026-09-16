@@ -68,6 +68,47 @@ def test_fetch_uses_configured_user_agent():
     assert seen_headers["user-agent"] == "test-agent/0.1"
 
 
+def test_fetch_attaches_cookie_header_from_credential_provider_for_matching_domain():
+    seen_headers = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers["cookie"] = request.headers.get("cookie")
+        return httpx.Response(200, text="ok")
+
+    fetcher = _make_fetcher(
+        handler, credential_provider=lambda domain: "session=abc123" if domain == "example.com" else None
+    )
+    fetcher.fetch("https://example.com/")
+
+    assert seen_headers["cookie"] == "session=abc123"
+
+
+def test_fetch_no_cookie_header_when_credential_provider_returns_none():
+    seen_headers = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers["cookie"] = request.headers.get("cookie")
+        return httpx.Response(200, text="ok")
+
+    fetcher = _make_fetcher(handler, credential_provider=lambda domain: None)
+    fetcher.fetch("https://example.com/")
+
+    assert seen_headers["cookie"] is None
+
+
+def test_fetch_no_cookie_header_when_no_credential_provider_configured():
+    seen_headers = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen_headers["cookie"] = request.headers.get("cookie")
+        return httpx.Response(200, text="ok")
+
+    fetcher = _make_fetcher(handler)
+    fetcher.fetch("https://example.com/")
+
+    assert seen_headers["cookie"] is None
+
+
 class _BlockingRobotsChecker(RobotsChecker):
     def can_fetch(self, url: str, user_agent: str) -> bool:
         return False

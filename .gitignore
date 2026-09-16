@@ -1,6 +1,16 @@
 # Secrets & env
 .env
 .env.local
+*.env
+secrets/
+*.pem
+*.key
+.test-deps/
+.test-work/
+temp_uploads/
+runs/
+output/
+!runner.env.example
 
 # Data / DB
 data/

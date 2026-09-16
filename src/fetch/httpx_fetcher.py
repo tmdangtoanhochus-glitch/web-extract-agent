@@ -6,7 +6,7 @@ thay vì engine này.
 from __future__ import annotations
 
 import logging
-from typing import Optional
+from typing import Callable, Optional
 
 import httpx
 
@@ -35,6 +35,12 @@ class HttpxFetcher(FetchEngine):
     truyền `settings.fetch_default_delay_seconds` (xem `src/api/main.py`).
     Rate-limit dùng chung `DomainRateLimiter` (xem `src/fetch/rate_limiter.py`)
     với `PlaywrightFetcher`.
+
+    `credential_provider`: hàm `domain -> cookie_header hoặc None`, tra cứu
+    cookie đăng nhập THỦ CÔNG người dùng đã lưu cho domain đó (xem
+    `StorageEngine.get_site_credential`, `src/api/admin.py`) — KHÔNG tự động
+    đăng nhập/điền form, chỉ gắn thẳng header `Cookie` nếu có cấu hình sẵn cho
+    domain của URL đang fetch. `None` (mặc định) = không gắn cookie nào.
     """
 
     def __init__(
@@ -44,12 +50,14 @@ class HttpxFetcher(FetchEngine):
         robots_checker: Optional[RobotsChecker] = None,
         client: Optional[httpx.Client] = None,
         delay_seconds: float = 0.0,
+        credential_provider: Optional[Callable[[str], Optional[str]]] = None,
     ) -> None:
         self._user_agent = user_agent
         self._timeout_seconds = timeout_seconds
         self._robots_checker = robots_checker or HttpRobotsChecker()
         self._injected_client = client
         self._rate_limiter = DomainRateLimiter(delay_seconds)
+        self._credential_provider = credential_provider
 
     def _wait_for_domain(self, url: str) -> None:
         self._rate_limiter.wait(domain_of(url))
@@ -78,7 +86,12 @@ class HttpxFetcher(FetchEngine):
             # Set header tường minh trên từng request (không chỉ dựa vào default
             # header của client) để user-agent luôn đúng kể cả khi client được
             # inject từ ngoài (test double).
-            response = client.get(url, headers={"User-Agent": self._user_agent})
+            headers = {"User-Agent": self._user_agent}
+            cookie_header = self._credential_provider(domain_of(url)) if self._credential_provider else None
+            if cookie_header:
+                headers["Cookie"] = cookie_header
+                logger.info("Dùng cookie đăng nhập đã lưu cho domain %s khi fetch %s", domain_of(url), url)
+            response = client.get(url, headers=headers)
             return FetchResult(
                 url=url,
                 final_url=str(response.url),

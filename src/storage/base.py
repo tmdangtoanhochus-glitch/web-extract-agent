@@ -80,6 +80,7 @@ class ScheduledJob:
     file_path: Optional[str] = None
     write_mode: Optional[str] = None
     key_field: Optional[str] = None
+    image_fields: list[str] = field(default_factory=list)
     last_run_at: Optional[datetime] = None
     last_status: Optional[str] = None
     last_error_traceback: Optional[str] = None
@@ -96,6 +97,19 @@ class AuditLogEntry:
     job_id: Optional[str]
     occurred_at: datetime
     detail: dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
+class SiteCredential:
+    """Cookie/session đăng nhập THỦ CÔNG cho 1 domain cần đăng nhập mới crawl
+    được — người dùng tự đăng nhập bằng trình duyệt thật, copy cookie, dán
+    vào (KHÔNG tự động điền form login, xem `src/fetch/httpx_fetcher.py`).
+    Lưu theo domain, dùng lại cho mọi job (crawl 1 lần lẫn job lịch) cùng
+    domain — người dùng tự cập nhật lại khi cookie hết hạn."""
+
+    domain: str
+    cookie_header: str
+    updated_at: datetime
 
 
 @dataclass(frozen=True)
@@ -216,9 +230,12 @@ class StorageEngine(ABC):
         file_path: Optional[str] = None,
         write_mode: Optional[str] = None,
         key_field: Optional[str] = None,
+        image_fields: Optional[list[str]] = None,
     ) -> ScheduledJob:
         """`dataset_id` chỉ bắt buộc khi `storage_mode="db"` — `None` cho job
-        `storage_mode="file"` (không tạo dataset cho luồng file)."""
+        `storage_mode="file"` (không tạo dataset cho luồng file). `image_fields`:
+        field nào người dùng đã đánh dấu tường minh là ảnh cần tải về (xem
+        `src/storage/image_downloader.py`), áp dụng lại mỗi lần job chạy."""
         raise NotImplementedError
 
     @abstractmethod
@@ -251,4 +268,22 @@ class StorageEngine(ABC):
 
     @abstractmethod
     def list_audit_log(self, job_id: Optional[str] = None, limit: int = 100) -> list[AuditLogEntry]:
+        raise NotImplementedError
+
+    # -- site_credentials (cookie đăng nhập thủ công theo domain) -----------
+    @abstractmethod
+    def save_site_credential(self, domain: str, cookie_header: str) -> SiteCredential:
+        """Lưu/ghi đè cookie cho 1 domain — ghi đè hoàn toàn cookie cũ (nếu có)."""
+        raise NotImplementedError
+
+    @abstractmethod
+    def get_site_credential(self, domain: str) -> Optional[SiteCredential]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def list_site_credentials(self) -> list[SiteCredential]:
+        raise NotImplementedError
+
+    @abstractmethod
+    def delete_site_credential(self, domain: str) -> None:
         raise NotImplementedError

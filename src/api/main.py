@@ -14,6 +14,7 @@ dataset, KHÔNG dedup, KHÔNG schema-match).
 from __future__ import annotations
 
 import dataclasses
+import logging
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
@@ -30,6 +31,8 @@ from ..pipeline import run_crawl_job, run_file_crawl_job
 from ..scheduler import CrawlScheduler
 from ..storage.base import StorageEngine
 from ..storage.file_writer import InvalidFilePathError, resolve_export_path
+from ..storage.image_downloader import IMAGES_ROOT
+from ..storage.postgres_storage import PostgresStorage
 from ..storage.sqlite_storage import SQLiteStorage
 from .admin import create_admin_router
 
@@ -45,6 +48,7 @@ class CrawlRequest(BaseModel):
     file_path: Optional[str] = None
     write_mode: Optional[str] = None  # "append" | "new_file" | "overwrite_row"
     key_field: Optional[str] = None
+    image_fields: list[str] = []  # field nào là ảnh cần tải về, xem image_downloader.py
 
 
 class CrawlResponse(BaseModel):
@@ -68,6 +72,7 @@ class ScheduleCreateRequest(BaseModel):
     file_path: Optional[str] = None
     write_mode: Optional[str] = None
     key_field: Optional[str] = None
+    image_fields: list[str] = []
 
 
 def _validate_file_storage_config(
@@ -100,6 +105,16 @@ def _validate_file_storage_config(
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
+def _log_manual_crawl_failure(storage: StorageEngine, url: str, status: str, detail: Optional[str]) -> None:
+    """Ghi lỗi "Chạy crawl" thủ công (KHÔNG thuộc job lịch nào) vào
+    `audit_log` để panel admin (`/admin/errors`) thấy lại được — trước đây
+    lỗi này chỉ hiện thoáng qua trên UI (Bước 3) rồi mất, không tra cứu lại
+    được sau đó."""
+    storage.add_audit_log(
+        event_type="crawl_failed", detail={"url": url, "status": status, "error": detail}
+    )
+
+
 def create_app(
     fetcher: FetchEngine,
     ai_client: AIClient,
@@ -110,6 +125,10 @@ def create_app(
     ai_debug_model: str = "",
     ai_debug_timeout_seconds: float = 30.0,
     confidence_threshold: float = 0.7,
+    admin_username: str = "",
+    admin_password: str = "",
+    runner_service=None,
+    runner_planner=None,
 ) -> FastAPI:
     crawl_scheduler = scheduler or CrawlScheduler(
         fetcher=fetcher, ai_client=ai_client, storage=storage, confidence_threshold=confidence_threshold
@@ -118,12 +137,32 @@ def create_app(
     @asynccontextmanager
     async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
         crawl_scheduler.start()
+        retention_scheduler = None
+        if runner_service is not None:
+            from apscheduler.schedulers.background import BackgroundScheduler
+            retention_scheduler = BackgroundScheduler()
+            retention_scheduler.add_job(runner_service.maintenance, "interval", minutes=5,
+                                        max_instances=1, coalesce=True)
+            retention_scheduler.start()
+            runner_service.maintenance()
         try:
             yield
         finally:
+            if retention_scheduler is not None:
+                retention_scheduler.shutdown(wait=True)
             crawl_scheduler.shutdown()
 
     app = FastAPI(title="Web Data Extraction & Management Platform", lifespan=_lifespan)
+    if runner_service is not None:
+        from .runner import create_runner_router
+        from ..runner.service import RunnerError
+        from fastapi.responses import JSONResponse
+
+        @app.exception_handler(RunnerError)
+        async def runner_error_handler(request, exc):
+            return JSONResponse(status_code=exc.code, content={"detail": str(exc)})
+
+        app.include_router(create_runner_router(runner_service, runner_planner))
 
     @app.get("/health")
     def health() -> dict:
@@ -152,8 +191,10 @@ def create_app(
                 ai_client=ai_client,
                 storage=storage,
                 confidence_threshold=confidence_threshold,
+                image_fields=req.image_fields,
             )
             if file_result.status in ("fetch_failed", "extract_failed"):
+                _log_manual_crawl_failure(storage, req.url, file_result.status, file_result.detail)
                 raise HTTPException(status_code=502, detail=file_result.detail or file_result.status)
             if file_result.status == "invalid_file_config":
                 raise HTTPException(status_code=400, detail=file_result.detail)
@@ -179,6 +220,7 @@ def create_app(
             ai_client=ai_client,
             storage=storage,
             confidence_threshold=confidence_threshold,
+            image_fields=req.image_fields,
         )
 
         if result.status == "dataset_not_found":
@@ -186,6 +228,7 @@ def create_app(
         if result.status == "schema_mismatch":
             raise HTTPException(status_code=409, detail=result.detail)
         if result.status in ("fetch_failed", "extract_failed"):
+            _log_manual_crawl_failure(storage, req.url, result.status, result.detail)
             raise HTTPException(status_code=502, detail=result.detail or result.status)
 
         return CrawlResponse(
@@ -217,6 +260,16 @@ def create_app(
             raise HTTPException(status_code=404, detail="file không tồn tại")
         return FileResponse(str(resolved), media_type="application/json", filename=resolved.name)
 
+    @app.get("/images/{file_path:path}")
+    def download_image_file(file_path: str) -> FileResponse:
+        try:
+            resolved = resolve_export_path(file_path, exports_root=IMAGES_ROOT)
+        except InvalidFilePathError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        if not resolved.exists() or not resolved.is_file():
+            raise HTTPException(status_code=404, detail="ảnh không tồn tại")
+        return FileResponse(str(resolved), filename=resolved.name)
+
     @app.post("/schedules")
     def create_schedule(req: ScheduleCreateRequest) -> dict:
         if req.storage_mode not in ("db", "file"):
@@ -234,6 +287,7 @@ def create_app(
                 file_path=req.file_path,
                 write_mode=req.write_mode,
                 key_field=req.key_field,
+                image_fields=req.image_fields,
             )
             return dataclasses.asdict(job)
 
@@ -254,6 +308,7 @@ def create_app(
             field_descriptions=req.field_descriptions,
             trigger_type=req.trigger_type,
             trigger_args=req.trigger_args,
+            image_fields=req.image_fields,
         )
         return dataclasses.asdict(job)
 
@@ -276,6 +331,8 @@ def create_app(
             ai_debug_api_key=ai_debug_api_key,
             ai_debug_model=ai_debug_model,
             ai_debug_timeout_seconds=ai_debug_timeout_seconds,
+            admin_username=admin_username,
+            admin_password=admin_password,
         )
     )
 
@@ -284,9 +341,24 @@ def create_app(
 
 def _build_default_app() -> FastAPI:
     settings = load_settings()
+    # QUAN TRỌNG: LOG_LEVEL trong .env chỉ có tác dụng nếu logging được cấu
+    # hình ở đây — thiếu dòng này thì MỌI logger.info() trong app (log tiến
+    # trình crawl ở src/pipeline.py, cảnh báo ở các module khác) bị nuốt mất,
+    # không hiện ra console/`docker compose logs` dù code đã gọi log đầy đủ.
+    logging.basicConfig(
+        level=settings.log_level,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    storage = _build_storage(settings)
     fetcher = HttpxFetcher(
         user_agent=settings.fetch_user_agent,
         delay_seconds=settings.fetch_default_delay_seconds,
+        # Cookie đăng nhập thủ công theo domain (người dùng tự lưu qua panel
+        # admin) — KHÔNG tự động đăng nhập, chỉ tra cứu + gắn header nếu đã
+        # có sẵn cho domain của URL đang fetch (xem HttpxFetcher docstring).
+        credential_provider=lambda domain: (
+            (cred := storage.get_site_credential(domain)) and cred.cookie_header
+        ),
     )
     ai_client = GreenNodeChatClient(
         base_url=settings.ai_base_url,
@@ -294,7 +366,25 @@ def _build_default_app() -> FastAPI:
         model=settings.ai_model,
         timeout_seconds=settings.ai_timeout_seconds,
     )
-    storage = SQLiteStorage(settings.db_path)
+    if not settings.admin_username or not settings.admin_password:
+        logging.getLogger(__name__).warning(
+            "ADMIN_USERNAME/ADMIN_PASSWORD chưa cấu hình trong .env — panel admin (/admin/*) "
+            "sẽ từ chối MỌI request (401) cho tới khi cấu hình."
+        )
+    runner_service = None
+    runner_planner = None
+    if settings.runner_enabled:
+        from ..runner.repository import Repository
+        from ..runner.service import Service
+        runner_service = Service(Repository(settings.runner_db_path,
+                                           postgres_dsn=settings.runner_database_url or None),
+                                 settings.runner_data_root)
+        if settings.runner_ai_enabled:
+            if not all((settings.ai_base_url, settings.ai_api_key, settings.ai_model)):
+                raise ValueError("Runner Describe requires AI configuration")
+            from ..runner.planner import StepPlanner
+            runner_planner = StepPlanner(settings.ai_base_url, settings.ai_api_key,
+                                         settings.ai_model, settings.ai_timeout_seconds)
     return create_app(
         fetcher=fetcher,
         ai_client=ai_client,
@@ -304,7 +394,25 @@ def _build_default_app() -> FastAPI:
         ai_debug_model=settings.ai_debug_model,
         ai_debug_timeout_seconds=settings.ai_debug_timeout_seconds,
         confidence_threshold=settings.ai_confidence_threshold,
+        admin_username=settings.admin_username,
+        admin_password=settings.admin_password,
+        runner_service=runner_service,
+        runner_planner=runner_planner,
     )
+
+
+def _build_storage(settings) -> StorageEngine:
+    """`DB_BACKEND` chọn "sqlite" (mặc định, dev/MVP) hay "postgres"
+    (production — vd. GreenNode có Postgres managed). Cả 2 cùng implement
+    `StorageEngine`, tầng gọi (`create_app`) không cần biết đang dùng backend
+    nào (adapter pattern, CLAUDE.md mục 6)."""
+    if settings.db_backend == "postgres":
+        if not settings.database_url:
+            raise ValueError("DB_BACKEND=postgres nhưng thiếu DATABASE_URL trong .env")
+        return PostgresStorage(settings.database_url)
+    if settings.db_backend != "sqlite":
+        raise ValueError(f"DB_BACKEND không hợp lệ: {settings.db_backend!r} (chỉ nhận 'sqlite' hoặc 'postgres')")
+    return SQLiteStorage(settings.db_path)
 
 
 app = _build_default_app()

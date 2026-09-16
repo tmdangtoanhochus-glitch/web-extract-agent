@@ -155,16 +155,29 @@ def _to_field_extractions(
     if not isinstance(parsed, dict):
         raise ValueError(f"response AI không phải JSON object: {parsed!r}")
 
+    # Model đôi khi trả key khác hoa/thường hoặc thừa khoảng trắng so với tên
+    # field yêu cầu (vd. "quote" thay vì "Quote") dù đã trích đúng giá trị —
+    # so khớp không phân biệt hoa/thường thay vì exact-match để field không bị
+    # rơi về None/confidence 0 chỉ vì lệch cách viết hoa.
+    normalized_parsed = {str(key).strip().lower(): value for key, value in parsed.items()}
+
     fields: dict[str, FieldExtraction] = {}
+    unmatched: list[str] = []
     for name in field_descriptions:
-        entry = parsed.get(name)
+        entry = normalized_parsed.get(name.strip().lower())
         if not isinstance(entry, dict):
             fields[name] = FieldExtraction(value=None, confidence=0.0, evidence=None)
+            unmatched.append(name)
             continue
         fields[name] = FieldExtraction(
             value=entry.get("value"),
             confidence=_safe_confidence(entry.get("confidence")),
             evidence=entry.get("evidence"),
+        )
+    if unmatched:
+        logger.warning(
+            "AI response không có field %s (đã so khớp không phân biệt hoa/thường) "
+            "— response thật trả về key: %s", unmatched, list(parsed.keys()),
         )
     return fields
 

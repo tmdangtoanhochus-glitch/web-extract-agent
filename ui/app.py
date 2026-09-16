@@ -68,7 +68,7 @@ def _init_state() -> None:
         "dataset_name": "",
         "selected_dataset_id": None,
         "urls": [],
-        "fields": [{"name": "", "desc": ""}],
+        "fields": [{"name": "", "desc": "", "is_image": False}],
         "file_path": "",
         "write_mode_label": "Ghi thêm",
         "key_field": None,
@@ -270,10 +270,11 @@ def _render_step2() -> None:
             st.info("Dataset có sẵn yêu cầu đúng tên field theo schema hiện có — chỉ sửa được mô tả.")
             fixed_names = dataset["schema_signature"]
             if [f["name"] for f in st.session_state.fields] != fixed_names:
-                st.session_state.fields = [{"name": name, "desc": ""} for name in fixed_names]
+                st.session_state.fields = [{"name": name, "desc": "", "is_image": False} for name in fixed_names]
 
     for idx, row in enumerate(st.session_state.fields):
-        c1, c2, c3 = st.columns([3, 6, 1])
+        row.setdefault("is_image", False)
+        c1, c2, c3, c4 = st.columns([3, 5, 1, 1])
         row["name"] = c1.text_input(
             "Tên field", value=row["name"], key=f"fname_{idx}", disabled=bool(using_existing),
             placeholder="gia_ban",
@@ -281,12 +282,16 @@ def _render_step2() -> None:
         row["desc"] = c2.text_input(
             "Mô tả tự nhiên", value=row["desc"], key=f"fdesc_{idx}", placeholder="Giá bán ra niêm yết trên trang",
         )
-        if not using_existing and c3.button("🗑", key=f"rmf_{idx}") and len(st.session_state.fields) > 1:
+        row["is_image"] = c3.checkbox(
+            "Ảnh", value=row["is_image"], key=f"fimg_{idx}",
+            help="Field này là URL ảnh — tải file về data/images/ thay vì chỉ lưu URL.",
+        )
+        if not using_existing and c4.button("🗑", key=f"rmf_{idx}") and len(st.session_state.fields) > 1:
             st.session_state.fields.pop(idx)
             st.rerun()
 
     if not using_existing and st.button("＋ Thêm field"):
-        st.session_state.fields.append({"name": "", "desc": ""})
+        st.session_state.fields.append({"name": "", "desc": "", "is_image": False})
         st.rerun()
 
     if is_file_mode:
@@ -354,6 +359,7 @@ def _render_step3() -> None:
 
     is_file_mode = st.session_state.storage_mode == "Lưu ra file"
     field_descriptions = {f["name"]: f["desc"] for f in st.session_state.fields}
+    image_fields = [f["name"] for f in st.session_state.fields if f.get("is_image")]
     if is_file_mode:
         st.markdown(f"**Lưu ra file:** {st.session_state.file_path}")
         st.markdown(f"**Cách ghi:** {st.session_state.write_mode_label}")
@@ -367,7 +373,9 @@ def _render_step3() -> None:
         st.session_state.run_file_paths = []
         dataset_id = st.session_state.selected_dataset_id
         for url in st.session_state.urls:
-            body: dict[str, Any] = {"url": url, "field_descriptions": field_descriptions}
+            body: dict[str, Any] = {
+                "url": url, "field_descriptions": field_descriptions, "image_fields": image_fields,
+            }
             if is_file_mode:
                 body["storage_mode"] = "file"
                 body["file_path"] = st.session_state.file_path.strip()
@@ -598,35 +606,51 @@ def _render_step5() -> None:
 
     st.markdown("**Mô tả field**")
     field_descriptions: dict[str, str] = {}
+    schedule_image_fields: list[str] = []
     if is_schedule_file_mode:
         # Luồng file không có dataset -> tự khai báo field tự do (giống Bước 2 khi tạo dataset mới).
         if "schedule_fields" not in st.session_state:
-            st.session_state.schedule_fields = [{"name": "", "desc": ""}]
+            st.session_state.schedule_fields = [{"name": "", "desc": "", "is_image": False}]
         for idx, row in enumerate(st.session_state.schedule_fields):
-            c1, c2, c3 = st.columns([3, 6, 1])
+            row.setdefault("is_image", False)
+            c1, c2, c3, c4 = st.columns([3, 5, 1, 1])
             row["name"] = c1.text_input("Tên field", value=row["name"], key=f"sched_fname_{idx}", placeholder="gia_ban")
             row["desc"] = c2.text_input(
                 "Mô tả tự nhiên", value=row["desc"], key=f"sched_fdesc_{idx}", placeholder="Giá bán ra niêm yết"
             )
-            if c3.button("🗑", key=f"sched_rmf_{idx}") and len(st.session_state.schedule_fields) > 1:
+            row["is_image"] = c3.checkbox(
+                "Ảnh", value=row["is_image"], key=f"sched_fimg_{idx}",
+                help="Field này là URL ảnh — tải file về data/images/ thay vì chỉ lưu URL.",
+            )
+            if c4.button("🗑", key=f"sched_rmf_{idx}") and len(st.session_state.schedule_fields) > 1:
                 st.session_state.schedule_fields.pop(idx)
                 st.rerun()
         if st.button("＋ Thêm field", key="sched_add_field"):
-            st.session_state.schedule_fields.append({"name": "", "desc": ""})
+            st.session_state.schedule_fields.append({"name": "", "desc": "", "is_image": False})
             st.rerun()
         field_descriptions = {
             f["name"].strip(): f["desc"].strip()
             for f in st.session_state.schedule_fields
             if f["name"].strip() and f["desc"].strip()
         }
+        schedule_image_fields = [
+            f["name"].strip() for f in st.session_state.schedule_fields if f.get("is_image") and f["name"].strip()
+        ]
     elif chosen_dataset is not None:
         st.caption("Dataset có sẵn yêu cầu đúng tên field theo schema hiện có.")
         for name in chosen_dataset["schema_signature"]:
-            field_descriptions[name] = st.text_input(
+            dc1, dc2 = st.columns([5, 1])
+            field_descriptions[name] = dc1.text_input(
                 f"Mô tả cho '{name}'",
                 key=f"schedule_desc_{chosen_dataset['dataset_id']}_{name}",
                 placeholder="Mô tả tự nhiên để AI hiểu field này",
             )
+            is_image = dc2.checkbox(
+                "Ảnh", key=f"schedule_img_{chosen_dataset['dataset_id']}_{name}",
+                help="Field này là URL ảnh — tải file về data/images/ thay vì chỉ lưu URL.",
+            )
+            if is_image:
+                schedule_image_fields.append(name)
 
     file_path, write_mode, key_field = "", "append", None
     if is_schedule_file_mode:
@@ -682,6 +706,7 @@ def _render_step5() -> None:
                 "field_descriptions": field_descriptions,
                 "trigger_type": trigger_type,
                 "trigger_args": trigger_args,
+                "image_fields": schedule_image_fields,
             }
             if is_schedule_file_mode:
                 body["storage_mode"] = "file"
