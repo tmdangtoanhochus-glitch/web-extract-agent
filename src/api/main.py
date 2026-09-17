@@ -18,15 +18,16 @@ import logging
 import hashlib
 import json
 from contextlib import asynccontextmanager
-from typing import AsyncIterator, Optional
+from typing import AsyncIterator, Optional, Literal
 
-from fastapi import FastAPI, HTTPException, Response
+from fastapi import FastAPI, HTTPException, Response, Header
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 from uuid import UUID, uuid4
 from urllib.parse import urlsplit
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, SecretStr
+from pydantic import BaseModel, SecretStr, ConfigDict, model_validator, Field
+from ..crawl_tasks import CrawlTasks, QueueFull, TaskNotFound
 from ..bulk_crawl import CrawlOptions, plan_urls, run_bulk, preview_bulk
 from .crawl_reports import create_report_router, context, exception_frames
 
@@ -36,7 +37,7 @@ from ..config import load_settings
 from ..fetch.base import FetchEngine
 from ..fetch.httpx_fetcher import HttpxFetcher
 from ..pipeline import run_crawl_job, run_file_crawl_job
-from ..scheduler import CrawlScheduler
+from ..scheduler import CrawlScheduler, validate_trigger
 from ..storage.base import StorageEngine
 from ..storage.file_writer import InvalidFilePathError, resolve_export_path
 from ..storage.image_downloader import IMAGES_ROOT
@@ -74,6 +75,16 @@ class CrawlResponse(BaseModel):
     detail: Optional[str] = None
 
 
+class CrawlBatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    requests: list[CrawlRequest] = Field(min_length=1, max_length=20)
+
+
+class CrawlControlRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    action: Literal["pause", "resume", "cancel"]
+
+
 class ScheduleCreateRequest(BaseModel):
     crawl_options: CrawlOptions | None = None
     url: str
@@ -86,6 +97,21 @@ class ScheduleCreateRequest(BaseModel):
     write_mode: Optional[str] = None
     key_field: Optional[str] = None
     image_fields: list[str] = []
+
+
+class ScheduleUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    enabled: bool | None = None
+    trigger_type: str | None = None
+    trigger_args: dict | None = None
+
+    @model_validator(mode="after")
+    def validate_update(self):
+        if (self.trigger_type is None) != (self.trigger_args is None):
+            raise ValueError("Cần cả trigger_type và trigger_args")
+        if self.enabled is None and self.trigger_type is None:
+            raise ValueError("Cần trạng thái hoặc thời gian lịch")
+        return self
 
 
 def _validate_file_storage_config(
@@ -146,6 +172,7 @@ def create_app(
     crawl_scheduler = scheduler or CrawlScheduler(
         fetcher=fetcher, ai_client=ai_client, storage=storage, confidence_threshold=confidence_threshold
     )
+    crawl_tasks = CrawlTasks()
 
     @asynccontextmanager
     async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -161,11 +188,13 @@ def create_app(
         try:
             yield
         finally:
+            crawl_tasks.shutdown()
             if retention_scheduler is not None:
                 retention_scheduler.shutdown(wait=True)
             crawl_scheduler.shutdown()
 
     app = FastAPI(title="Web Data Extraction & Management Platform", lifespan=_lifespan)
+    app.state.crawl_tasks = crawl_tasks
     if runner_service is not None:
         from .runner import create_runner_router
         from ..runner.service import RunnerError
@@ -257,16 +286,69 @@ def create_app(
             {"loc": list(error["loc"]), "type": error["type"]} for error in exc.errors()]})
 
     app.include_router(create_report_router(storage))
+    from .dataset_export import create_export_router
+    app.include_router(create_export_router(storage))
 
     @app.post("/crawl")
     def crawl(req: CrawlRequest, response: Response):
         return crawl_impl(req, response)
 
+    @app.post("/crawl-jobs", status_code=202)
+    def submit_crawl(req: CrawlBatchRequest):
+        if any(item.crawl_options is None for item in req.requests):
+            raise HTTPException(400, "Chạy nền hiện dành cho kéo nhiều lượt / bảng")
+        def destination(item):
+            return (item.storage_mode, item.dataset_id, item.dataset_name, item.file_path, tuple(sorted(item.field_descriptions)))
+        if any(destination(item) != destination(req.requests[0]) for item in req.requests):
+            raise HTTPException(400, "Các nguồn trong một đợt phải dùng cùng dataset/file và schema")
+
+        def execute(checkpoint, progress):
+            items = []
+            dataset_id = None
+            for index, item in enumerate(req.requests, 1):
+                if not checkpoint():
+                    return {"status": "cancelled", "items": items, "dataset_id": dataset_id}
+                progress({"source_index": index, "sources": len(req.requests), "processed": 0, "failed": 0})
+                if not item.dataset_id and dataset_id and item.storage_mode == "db":
+                    item = item.model_copy(update={"dataset_id": dataset_id})
+                try:
+                    result = crawl_impl(item, Response(), checkpoint=checkpoint, progress=progress)
+                except HTTPException as exc:
+                    result = {"status": "error", "failed": 1, "detail": "Nguồn này gặp lỗi; xem mã lượt kéo để báo admin",
+                              "request_id": (exc.headers or {}).get("X-Crawl-Request-ID")}
+                items.append({"url": item.url, **result})
+                if item.storage_mode == "db":
+                    dataset_id = result.get("dataset_id") or dataset_id
+                if result.get("status") == "cancelled":
+                    break
+            status = "cancelled" if items and items[-1]["status"] == "cancelled" else "partial" if any(i.get("failed") for i in items) else "completed"
+            return {"status": status, "items": items, "dataset_id": dataset_id}
+
+        try:
+            return crawl_tasks.submit(execute)
+        except QueueFull as exc:
+            raise HTTPException(429, str(exc)) from None
+
+    @app.get("/crawl-jobs/{job_id}")
+    def crawl_job_status(job_id: str, control: str | None = Header(default=None, alias="X-Crawl-Control")):
+        try:
+            return crawl_tasks.status(job_id, control)
+        except TaskNotFound:
+            raise HTTPException(404, "Không tìm thấy đợt crawl hoặc mã điều khiển không hợp lệ") from None
+
+    @app.post("/crawl-jobs/{job_id}/control")
+    def control_crawl(job_id: str, req: CrawlControlRequest,
+                      control: str | None = Header(default=None, alias="X-Crawl-Control")):
+        try:
+            return crawl_tasks.action(job_id, control, req.action)
+        except TaskNotFound:
+            raise HTTPException(404, "Không tìm thấy đợt crawl hoặc mã điều khiển không hợp lệ") from None
+
     @app.post("/crawl/preview")
     def preview(req: CrawlRequest, response: Response):
         return crawl_impl(req, response, preview=True)
 
-    def crawl_impl(req: CrawlRequest, response: Response, preview=False):
+    def crawl_impl(req: CrawlRequest, response: Response, preview=False, checkpoint=None, progress=None):
         request_id = str(uuid4())
         headers = {"X-Crawl-Request-ID": request_id}
         response.headers.update(headers)
@@ -280,6 +362,8 @@ def create_app(
         if req.crawl_options:
             metadata["crawl_options"] = req.crawl_options.model_dump(mode="json", exclude={"table_selector"})
         storage.add_audit_log("crawl_request", job_id=request_id, detail=metadata)
+        if progress:
+            progress({"request_id": request_id})
         try:
             retry_indices = None
             if req.retry_of:
@@ -322,7 +406,8 @@ def create_app(
                             options=req.crawl_options, fetcher=request_fetcher, ai_client=ai_client, storage=storage,
                             dataset_id=req.dataset_id, dataset_name=req.dataset_name, storage_mode=req.storage_mode,
                             file_path=req.file_path, write_mode=req.write_mode or "append", image_fields=req.image_fields,
-                            confidence_threshold=confidence_threshold, retry_indices=retry_indices)
+                            confidence_threshold=confidence_threshold, retry_indices=retry_indices,
+                            checkpoint=checkpoint, progress=progress)
                 except ValueError as exc:
                     raise HTTPException(400, str(exc)) from None
             else:
@@ -373,6 +458,10 @@ def create_app(
 
     @app.post("/schedules")
     def create_schedule(req: ScheduleCreateRequest) -> dict:
+        try:
+            validate_trigger(req.trigger_type, req.trigger_args)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
         if req.crawl_options:
             try:
                 plan_urls(req.url, req.crawl_options)
@@ -432,7 +521,17 @@ def create_app(
 
     @app.get("/schedules")
     def list_schedules() -> list[dict]:
-        return [dataclasses.asdict(job) for job in storage.list_scheduled_jobs()]
+        return [crawl_scheduler.describe(job) for job in storage.list_scheduled_jobs()]
+
+    @app.patch("/schedules/{job_id}")
+    def update_schedule(job_id: str, req: ScheduleUpdateRequest):
+        try:
+            job = crawl_scheduler.configure(job_id, req.enabled, req.trigger_type, req.trigger_args)
+            return crawl_scheduler.describe(job)
+        except LookupError:
+            raise HTTPException(404, "Không tìm thấy lịch") from None
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from None
 
     @app.delete("/schedules/{job_id}")
     def delete_schedule(job_id: str) -> dict:

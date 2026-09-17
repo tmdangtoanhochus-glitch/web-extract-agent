@@ -12,10 +12,15 @@ job trong bộ nhớ tiến trình, mất hết khi process dừng.
 from __future__ import annotations
 
 import logging
+import math
+from dataclasses import asdict, replace
+from threading import RLock
 import traceback as traceback_module
 from typing import Any, Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
+from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 
 from .ai.base import AIClient
 from .fetch.base import FetchEngine
@@ -23,6 +28,26 @@ from .pipeline import run_crawl_job, run_file_crawl_job
 from .storage.base import ScheduledJob, StorageEngine
 
 logger = logging.getLogger(__name__)
+
+
+def validate_trigger(trigger_type, trigger_args, timezone=None):
+    """Validate public trigger constructors before making any persistent changes."""
+    args = dict(trigger_args)
+    if timezone is not None:
+        args.setdefault("timezone", timezone)
+    try:
+        if trigger_type == "interval":
+            durations = [float(args.get(unit, 0)) for unit in ("weeks", "days", "hours", "minutes", "seconds")]
+            if any(not math.isfinite(value) or value < 0 for value in durations) or sum(durations) <= 0:
+                raise ValueError("Invalid interval")
+            return IntervalTrigger(**args)
+        if trigger_type == "cron":
+            if not any(key in args for key in ("year", "month", "day", "week", "day_of_week", "hour", "minute", "second")):
+                raise ValueError("Missing cron fields")
+            return CronTrigger(**args)
+    except Exception:
+        raise ValueError("Thời gian lịch không hợp lệ; kiểm tra chu kỳ, giờ và múi giờ") from None
+    raise ValueError("Chỉ hỗ trợ lịch interval hoặc cron")
 
 
 class CrawlScheduler:
@@ -43,6 +68,7 @@ class CrawlScheduler:
         self._storage = storage
         self._scheduler = scheduler or BackgroundScheduler()
         self._confidence_threshold = confidence_threshold
+        self._management_lock = RLock()
 
     def start(self) -> None:
         """Khởi động scheduler và nạp lại toàn bộ job đang bật (`enabled`)
@@ -73,6 +99,7 @@ class CrawlScheduler:
         """Tạo job mới: lưu vào storage TRƯỚC (không mất job nếu crash ngay
         sau khi đăng ký với APScheduler), rồi đăng ký chạy thật. `dataset_id`
         chỉ cần khi `storage_mode="db"` — `None` cho job `storage_mode="file"`."""
+        validate_trigger(trigger_type, trigger_args, self._scheduler.timezone)
         job = self._storage.create_scheduled_job(
             dataset_id=dataset_id,
             url=url,
@@ -86,22 +113,61 @@ class CrawlScheduler:
             image_fields=image_fields,
             crawl_options=crawl_options,
         )
-        self._register_job(job)
+        try:
+            self._register_job(job)
+        except Exception:
+            self._storage.delete_scheduled_job(job.job_id)
+            raise
         return job
 
+    def describe(self, job):
+        live = self._scheduler.get_job(job.job_id)
+        next_run = getattr(live, "next_run_time", None) if job.enabled else None
+        return {**asdict(job), "next_run_at": next_run.isoformat() if next_run else None,
+                "scheduler_running": self._scheduler.running,
+                "timezone": str(job.trigger_args.get("timezone") or self._scheduler.timezone)}
+
+    def configure(self, job_id, enabled=None, trigger_type=None, trigger_args=None):
+        with self._management_lock:
+            old = self._storage.get_scheduled_job(job_id)
+            if old is None:
+                raise LookupError("Không tìm thấy lịch")
+            updated = replace(old, enabled=old.enabled if enabled is None else enabled,
+                              trigger_type=trigger_type if trigger_type is not None else old.trigger_type,
+                              trigger_args=trigger_args if trigger_args is not None else old.trigger_args)
+            if updated.enabled or trigger_type is not None:
+                validate_trigger(updated.trigger_type, updated.trigger_args, self._scheduler.timezone)
+            if updated == old:
+                return old
+            self._storage.configure_scheduled_job(job_id, updated.enabled, updated.trigger_type, updated.trigger_args)
+            try:
+                if updated.enabled:
+                    self._register_job(updated)
+                elif self._scheduler.get_job(job_id) is not None:
+                    self._scheduler.remove_job(job_id)
+            except Exception:
+                self._storage.configure_scheduled_job(job_id, old.enabled, old.trigger_type, old.trigger_args)
+                raise
+            self._storage.add_audit_log("schedule_configured", job_id=job_id, detail={
+                "enabled": updated.enabled, "trigger_type": updated.trigger_type,
+                "trigger_args": updated.trigger_args})
+            return self._storage.get_scheduled_job(job_id)
+
     def remove_job(self, job_id: str) -> None:
-        self._storage.delete_scheduled_job(job_id)
-        if self._scheduler.get_job(job_id) is not None:
-            self._scheduler.remove_job(job_id)
+        with self._management_lock:
+            self._storage.delete_scheduled_job(job_id)
+            if self._scheduler.get_job(job_id) is not None:
+                self._scheduler.remove_job(job_id)
 
     def _register_job(self, job: ScheduledJob) -> None:
         self._scheduler.add_job(
             self._run_job,
-            trigger=job.trigger_type,
+            trigger=validate_trigger(job.trigger_type, job.trigger_args, self._scheduler.timezone),
             id=job.job_id,
             replace_existing=True,
             kwargs={"job_id": job.job_id},
-            **job.trigger_args,
+            max_instances=1,
+            coalesce=True,
         )
 
     def _run_job(self, job_id: str) -> None:
@@ -113,6 +179,8 @@ class CrawlScheduler:
         job = self._storage.get_scheduled_job(job_id)
         if job is None:
             logger.warning("Job %s không còn tồn tại trong storage — bỏ qua lần chạy này.", job_id)
+            return
+        if not job.enabled:
             return
 
         traceback_text: Optional[str] = None

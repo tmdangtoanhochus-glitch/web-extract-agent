@@ -49,6 +49,8 @@ CREATE TABLE IF NOT EXISTS records (
     as_of TEXT
 );
 
+CREATE INDEX IF NOT EXISTS idx_records_export ON records (dataset_id, crawled_at, record_id);
+
 CREATE TABLE IF NOT EXISTS extraction_strategies (
     domain TEXT NOT NULL,
     field_name TEXT NOT NULL,
@@ -286,6 +288,16 @@ class SQLiteStorage(StorageEngine):
         ).fetchall()
         return [_row_to_record(row) for row in rows]
 
+    def export_record_page(self, dataset_id, cutoff, after=None, limit=500):
+        query = "SELECT * FROM records WHERE dataset_id = ? AND crawled_at <= ?"
+        args = [dataset_id, cutoff.isoformat()]
+        if after:
+            query += " AND (crawled_at < ? OR (crawled_at = ? AND record_id < ?))"
+            args.extend([after[0].isoformat(), after[0].isoformat(), after[1]])
+        query += " ORDER BY crawled_at DESC, record_id DESC LIMIT ?"
+        args.append(limit)
+        return [_row_to_record(row) for row in self._conn.execute(query, args).fetchall()]
+
     # -- extraction_strategies (cache CLAUDE.md mục 5) ----------------------
     def get_extraction_strategy(self, domain: str, field_name: str) -> Optional[ExtractionStrategy]:
         row = self._conn.execute(
@@ -394,6 +406,13 @@ class SQLiteStorage(StorageEngine):
             "UPDATE scheduled_jobs SET last_run_at = ?, last_status = ?, "
             "last_error_traceback = ? WHERE job_id = ?",
             (utcnow().isoformat(), status, traceback_text, job_id),
+        )
+        self._conn.commit()
+
+    def configure_scheduled_job(self, job_id, enabled, trigger_type, trigger_args):
+        self._conn.execute(
+            "UPDATE scheduled_jobs SET enabled = ?, trigger_type = ?, trigger_args = ? WHERE job_id = ?",
+            (int(enabled), trigger_type, json.dumps(trigger_args), job_id),
         )
         self._conn.commit()
 

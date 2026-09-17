@@ -3,7 +3,7 @@ import io
 from pathlib import Path
 from openpyxl import load_workbook
 from .config import validate_workbook
-from src.runner.workbook_schema import STEP_COLUMNS, READ_ACTIONS, testcase_columns
+from src.runner.workbook_schema import STEP_COLUMNS, READ_ACTIONS, testcase_columns, header_result_blocks
 
 
 def read_workbook(path):
@@ -38,8 +38,7 @@ def analyze(template_content, draft_content):
             raise ValueError("Generated steps must be inactive")
         if any(any(value is not None for value in row) for row in list(draft["testcases"].values)[1:]):
             raise ValueError("Draft must contain testcase headers only; put user data in the template")
-        if list(next(draft["testcases"].values)) != testcase_columns(steps):
-            raise ValueError("Testcase headers do not match steps")
+        header_result_blocks(steps, list(next(draft["testcases"].values)))
         screens = list(dict.fromkeys(step["screen"] for step in steps))
         proposals = []
         def propose(key, value, default, reason):
@@ -85,7 +84,12 @@ def merge(template_content, draft_content, approved_keys=()):
         headers = [cell.value for cell in cases[1]]
         if len(headers) != len(set(headers)):
             raise ValueError("Duplicate testcase headers")
-        for key in testcase_columns(steps):
+        draft = load_workbook(io.BytesIO(draft_content), read_only=True, keep_links=False)
+        try:
+            draft_headers = list(next(draft["testcases"].values))
+        finally:
+            draft.close()
+        for key in draft_headers:
             if key not in headers:
                 headers.append(key)
                 cases.cell(1, len(headers), key)

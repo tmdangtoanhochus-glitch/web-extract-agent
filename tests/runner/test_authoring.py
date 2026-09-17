@@ -49,6 +49,64 @@ def test_capture_limit_and_mutated_event_revalidation():
         draft_workbook(recording)
 
 
+def test_record_controls_screens_pause_wait_and_expected_headers_only():
+    recording = Recording()
+    assert recording.accept({"action": "fill", "locator": "input:nth-of-type(1)"})
+    assert recording.control({"control": "toggle_pause"})
+    assert not recording.accept({"action": "click", "locator": "button:nth-of-type(1)"})
+    assert recording.suppressed == 1 and recording.dropped == 0
+    assert recording.control({"control": "next_screen"})
+    assert recording.control({"control": "toggle_pause"})
+    assert recording.accept({"action": "wait", "locator": "input:nth-of-type(1)"})
+    assert recording.accept({"action": "read_result_single", "locator": "input:nth-of-type(1)"})
+    wb = load_workbook(io.BytesIO(draft_workbook(recording)))
+    rows = list(wb["steps"].values)
+    assert [row[0] for row in rows[1:]] == ["recorded", "recorded_002", "recorded_002"]
+    assert rows[2][7] == "input:nth-of-type(1)"
+    assert rows[3][9] == "exact" and rows[3][12] == "css_input"
+    assert all(row[6] == "N" for row in rows[1:])
+    assert list(next(wb["testcases"].values))[-2:] == ["field_0001", "expected_field_0003"]
+    assert wb["testcases"].max_row == 1 and "settings" not in wb.sheetnames
+    wb.close()
+
+
+def test_record_rejects_untrusted_controls_cross_screen_reads_and_wrong_read_targets():
+    recording = Recording()
+    for payload in ({"control": "navigate"}, {"control": "next_screen", "url": "synthetic-private"},
+                    {"control": "next_screen", "screen": "private"}, None):
+        assert not recording.control(payload)
+    assert recording.screen == "recorded"
+    assert not recording.accept({"action": "read_result_single", "locator": "button:nth-of-type(1)"})
+    assert recording.accept({"action": "read_result_single", "locator": "textarea:nth-of-type(1)"})
+    assert recording.control({"control": "next_screen"})
+    assert not recording.accept({"action": "read_result_single", "locator": "input:nth-of-type(1)"})
+    assert not recording.accept({"action": "fill", "locator": "input:nth-of-type(1)", "screen": "private"})
+    for _ in range(98):
+        assert recording.control({"control": "next_screen"})
+    assert not recording.control({"control": "next_screen"})
+    assert recording.screen == "recorded_100"
+
+
+def test_invalid_export_does_not_leave_empty_output(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+    import playwright.sync_api
+    import record_runner
+    class Playwright:
+        def __enter__(self):
+            context = SimpleNamespace(pages=[], expose_binding=lambda *a: None,
+                add_init_script=lambda **kw: None, new_page=lambda: None)
+            browser = SimpleNamespace(new_context=lambda: context, is_connected=lambda: True, close=lambda: None)
+            return SimpleNamespace(chromium=SimpleNamespace(launch=lambda **kw: browser))
+        def __exit__(self, *args): pass
+    monkeypatch.setattr(playwright.sync_api, "sync_playwright", Playwright)
+    def invalid(_): raise ValueError("Invalid draft")
+    monkeypatch.setattr(record_runner, "draft_workbook", invalid)
+    target = tmp_path / "out.xlsx"
+    with pytest.raises(ValueError):
+        record_runner.record(target)
+    assert not target.exists()
+
+
 def test_recorder_does_not_overwrite_existing_output(tmp_path):
     from record_runner import record
     path = tmp_path / "draft.xlsx"

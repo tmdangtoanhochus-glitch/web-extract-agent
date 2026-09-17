@@ -202,6 +202,12 @@ class StorageEngine(ABC):
     def list_records(self, dataset_id: str, limit: int = 100, offset: int = 0) -> list[Record]:
         raise NotImplementedError
 
+    def export_record_page(self, dataset_id: str, cutoff: datetime,
+                           after: Optional[tuple[datetime, str]] = None,
+                           limit: int = 500) -> list[Record]:
+        """Stable keyset pagination for append-only records at or before cutoff."""
+        raise NotImplementedError
+
     # -- extraction_strategies (cache CLAUDE.md mục 5) ----------------------
     @abstractmethod
     def get_extraction_strategy(self, domain: str, field_name: str) -> Optional[ExtractionStrategy]:
@@ -259,6 +265,11 @@ class StorageEngine(ABC):
 
     @abstractmethod
     def delete_scheduled_job(self, job_id: str) -> None:
+        raise NotImplementedError
+
+    def configure_scheduled_job(self, job_id: str, enabled: bool,
+                                trigger_type: str, trigger_args: dict) -> None:
+        """Update timing/enabled only; preserve source, destination and run history."""
         raise NotImplementedError
 
     # -- audit_log (dùng cho panel admin "AI gợi ý sửa lỗi") ----------------

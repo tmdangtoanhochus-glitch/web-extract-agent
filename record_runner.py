@@ -21,11 +21,15 @@ def record(output):
             context = browser.new_context()
             def receive(source, payload):
                 if source["frame"] == source["page"].main_frame:
-                    recording.accept(payload)
+                    accepted = (recording.control(payload) if isinstance(payload, dict) and "control" in payload
+                                else recording.accept(payload))
+                    return {"accepted": accepted, "paused": recording.paused, "screen": recording.screen_index}
             context.expose_binding("runnerRecordEvent", receive)
             context.add_init_script(script=script)
             page = context.new_page()
             print("Navigate manually in the new browser. Close all pages to export the inactive draft.")
+            print("Ctrl+Alt+N: next screen; Ctrl+Alt+P: pause/resume recording.")
+            print("Hover a target: Ctrl+Alt+W records a wait; Ctrl+Alt+A records an input/select result read (expected stays empty).")
             while context.pages and browser.is_connected():
                 try:
                     context.pages[0].wait_for_timeout(250)
@@ -37,8 +41,9 @@ def record(output):
             if browser.is_connected():
                 browser.close()
     # Exclusive creation prevents overwriting a file created during recording.
+    content = draft_workbook(recording)
     with output.open("xb") as target:
-        target.write(draft_workbook(recording))
+        target.write(content)
     print(f"Exported {len(recording.events)} draft steps; rejected events: {recording.dropped}.")
 
 

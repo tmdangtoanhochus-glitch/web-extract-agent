@@ -20,6 +20,8 @@ def api(method, path, body=None, binary=False):
         if response.status_code == 401:
             st.session_state.pop("runner_session", None)
             st.session_state.pop("runner_describe_draft", None)
+            st.session_state.pop("runner_locator_draft", None)
+            st.session_state.runner_discovery_generation = st.session_state.get("runner_discovery_generation", 0) + 1
             st.error("Cần đăng nhập lại.")
             return None
         if response.status_code == 404:
@@ -54,6 +56,8 @@ if st.sidebar.button("Đăng xuất Runner"):
     api("POST", "/logout")
     st.session_state.pop("runner_session", None)
     st.session_state.pop("runner_describe_draft", None)
+    st.session_state.pop("runner_locator_draft", None)
+    st.session_state.runner_discovery_generation = st.session_state.get("runner_discovery_generation", 0) + 1
     st.rerun()
 
 tabs = st.tabs(["Chạy testcase", "Lịch sử & kết quả", "Agent", "Thông báo"] +
@@ -70,6 +74,10 @@ with tabs[-3]:
         with st.form("runner_describe", clear_on_submit=True):
             description = st.text_area("Mô tả testcase", max_chars=6000,
                                        placeholder="Đăng nhập bằng account, tìm theo CIF rồi đọc số tiền để kiểm tra. Chỉ tạo step và cột input/expected; tôi tự nhập testcase.")
+            result_blocks = st.number_input("Số khối kết quả cần cột expected (chỉ cho read_result_group)",
+                                            min_value=1, max_value=100, value=1, step=1)
+            st.caption("Nhóm nhập lặp: nêu rõ trong mô tả; bạn tự nhập danh sách giá trị phân cách bằng dấu ;. "
+                       "Số khối chỉ thêm cột trống, không đổi settings hoặc số lần thực thi.")
             reviewed = st.checkbox("Tôi đã kiểm tra mô tả không chứa secret hoặc dữ liệu nhạy cảm và đồng ý gửi cho AI.")
             generate = st.form_submit_button("Tạo workbook nháp")
         if generate:
@@ -80,7 +88,7 @@ with tabs[-3]:
                 st.error("Nhập mô tả ít nhất 10 ký tự.")
             else:
                 content = api("POST", "/authoring/describe", {
-                    "description": description, "reviewed_no_secrets": True}, binary=True)
+                    "description": description, "reviewed_no_secrets": True, "result_blocks": result_blocks}, binary=True)
                 if content:
                     st.session_state.runner_describe_draft = content
         if st.session_state.get("runner_describe_draft"):
@@ -98,10 +106,16 @@ with tabs[-2]:
     st.code("python record_runner.py --output config/Recorded_Draft.xlsx", language="bash")
     st.write("Trong browser mới, tự mở website và thao tác. Đóng các tab để xuất workbook nháp.")
     st.caption("Recorder ghi click, fill và select chuẩn bằng vị trí phần tử; không ghi giá trị input, nội dung trang hoặc URL.")
+    st.write("Ctrl+Alt+N: bắt đầu màn hình kế tiếp trước khi thao tác trên màn hình đó. "
+             "Ctrl+Alt+P: tạm dừng/tiếp tục ghi. Trạng thái và số màn hình hiện ở góc browser.")
+    st.write("Rê chuột lên phần tử rồi Ctrl+Alt+W để thêm bước chờ hiển thị. "
+             "Ctrl+Alt+A trên input/textarea/select để thêm bước đọc kết quả và cột expected trống; "
+             "bạn tự nhập giá trị kỳ vọng. Chỉ đánh dấu đọc kết quả trên một màn hình cuối.")
     st.write("Workbook ghi step inactive và header testcases, không sinh testcase/settings. Ghép vào config hiện có bằng lệnh bên dưới, "
              "tự nhập testcase và rà soát trước khi bật các dòng cần chạy.")
     st.info("Iframe, shadow DOM, upload, checkbox/radio và dropdown tùy biến cần cấu hình thủ công. "
-            "Locator theo vị trí có thể đổi khi giao diện thay đổi. Xem tab Describe để tạo nháp bằng AI; sửa locator tự động chưa có.")
+            "Recorder không tự nhận diện chuyển màn hình hoặc thu URL; dùng phím tắt để chia màn hình. "
+            "Locator theo vị trí có thể đổi khi giao diện thay đổi. Xem Inspector để kiểm tra và đề xuất repair có xác nhận.")
     st.subheader("Ghép step vào config trên máy local")
     st.code("python prepare_runner.py --template config/Existing.xlsx --draft config/Recorded_Draft.xlsx --output config/Prepared.xlsx", language="bash")
     st.caption("Áp dụng cho cả nháp Describe và Record. Giữ nguyên settings và testcase bạn đã nhập; chỉ bổ sung header còn thiếu. "
@@ -120,16 +134,30 @@ with tabs[-1]:
     st.info("UNIQUE_VISIBLE chỉ xác nhận một phần tử đang hiển thị, chưa chứng minh đúng mục tiêu hoặc testcase pass. "
             "Locator placeholder, wait, dropdown tùy biến và cách đọc kết quả phức tạp cần rà soát thủ công.")
     st.caption("Không tự sửa workbook, chạy thao tác nghiệp vụ hoặc gửi báo cáo lên server. "
-               "Sau khi sửa locator, chạy lại Inspector; AI repair chưa triển khai.")
+               "Sau khi sửa locator, chạy lại Inspector trước khi tạo run mới.")
     st.subheader("Chọn phần tử để sửa locator")
     st.code("python repair_runner.py --config config/Describe_Draft.xlsx --row 2 --output config/Repaired_Draft.xlsx", language="bash")
     st.write("Dùng số dòng Excel trong báo cáo Inspector (dòng header là 1). Trong browser mới, tự mở đúng màn hình, "
              "rê chuột lên phần tử thay thế và nhấn Ctrl+Alt+L. Xem CSS đề xuất ở terminal; nhập EXPORT để xuất bản sao hoặc q để hủy.")
     st.caption("Chỉ đổi locator_type/locator của dòng chọn, giữ các sheet và dữ liệu, đặt toàn bộ step/testcase trong bản sao về active=N. "
                "File gốc không đổi. Công cụ kiểm tra lại phần tử và hash workbook trước khi xuất; không gọi AI hay gửi DOM/input lên server.")
+    from ui.runner_discovery import render as render_discovery
+    render_discovery(api, capabilities if isinstance(capabilities, dict) else {})
+    st.subheader("Chạy thử một step có xác nhận")
+    st.code("python try_step_runner.py --config config/Prepared.xlsx --row 2 --output trial.json", language="bash")
+    st.write("Lệnh này thực hiện một thao tác thật trên website. Tự mở đúng màn hình trong browser mới, chọn tab, "
+             "kiểm tra phần tử được highlight và nhập EXECUTE 2 tại terminal để chạy dòng 2 đúng một lần.")
+    st.caption("Hỗ trợ fill/click/check/select trực tiếp và wait CSS cấu trúc; fill/select hỏi giá trị thử bằng đầu vào ẩn. "
+               "Không dùng testcase/credential file để lấy giá trị, không sửa workbook hay bật active. "
+               "Step có group, prefill hoặc wait phức tạp cần chạy qua Runner đầy đủ.")
+    st.info("ACTION_COMPLETED chỉ nghĩa là thao tác đã hoàn tất, không phải testcase PASS. "
+            "Nếu báo OUTCOME_UNKNOWN hoặc còn EXECUTION_STARTED sau khi bị ngắt, kiểm tra website trước khi tự tạo lần thử mới; "
+            "công cụ không retry. Báo cáo local chỉ chứa metadata.")
 
 with tabs[0]:
     st.info("Runner chạy trên máy của bạn. Chỉ dùng testcase có dữ liệu giả hoặc placeholder; credential UAT được resolve local.")
+    st.caption("Agent mới tự kiểm tra preflight trước khi mở browser. Nếu bị chặn, xem mã lỗi/sheet/dòng trong Lịch sử, "
+               "sửa workbook local rồi tạo run mới. Không tự sửa settings, sinh testcase hoặc bật active.")
     agents = [a for a in api("GET", "/agents") or [] if a["active"]]
     if not agents:
         st.warning("Tạo agent tại tab Agent rồi khởi động local_runner_agent.py trên máy của bạn.")
@@ -166,6 +194,34 @@ with tabs[1]:
     for r in api("GET", "/runs") or []:
         with st.expander(r["run_id"] + " · " + r["status"]):
             st.write({k: r[k] for k in ("passed", "failed", "errors", "unverified", "duration")})
+            late_result = r.get("late_result")
+            if r["status"] == "LOST":
+                st.warning("Backend đã mất theo dõi run. Không tạo run khác để thay thế trước khi kiểm tra máy local; "
+                           "thao tác trên website có thể đã xảy ra.")
+            if late_result:
+                st.info("Agent đã gửi kết quả sau khi run bị đánh dấu LOST. Đây là kết quả nhận muộn, không phải một lần chạy lại.")
+                st.write({"kết quả agent báo": late_result["status"], **{k: late_result[k]
+                          for k in ("passed", "failed", "errors", "unverified", "duration")}})
+                st.caption("Nhận lúc " + datetime.fromtimestamp(late_result["received_at"], timezone.utc).isoformat() +
+                           ". Giữ trạng thái LOST và hạn lưu ban đầu để bảo toàn lịch sử mất kết nối.")
+            report = r.get("preflight") or (late_result or {}).get("preflight")
+            if report:
+                if report["status"] == "blocked":
+                    st.error("Bị chặn trước khi mở browser: cần sửa workbook local.")
+                else:
+                    st.info("Đã qua kiểm tra tĩnh. Kết quả này không xác nhận locator, đăng nhập hoặc hành vi UAT đúng.")
+                st.write({"step active": report["active_steps"], "testcase active": report["active_testcases"]})
+                if report.get("issues"):
+                    st.dataframe(report["issues"], use_container_width=True)
+                if report.get("warnings"):
+                    st.warning("Có mục cần rà soát thêm")
+                    st.dataframe(report["warnings"], use_container_width=True)
+                if report.get("truncated"):
+                    st.caption("Chỉ hiển thị tối đa 100 lỗi và 100 cảnh báo; kiểm tra toàn bộ bằng preflight_runner.py ở local.")
+                st.caption("UNRESOLVED_LOCATOR/WAIT: kiểm tra locator nháp. SCREEN_NOT_IN_FLOW/RESULT_SCREEN_MISMATCH: "
+                           "đối chiếu màn hình với settings; chỉ sửa settings khi cần và do người dùng quyết định. "
+                           "ENTER_AND_ACTIVATE_USER_TESTCASES: tự nhập testcase và chọn active. "
+                           "INVALID_WORKBOOK: kiểm tra định dạng và các sheet bắt buộc bằng công cụ local.")
             if r["expires_at"]:
                 expiry = datetime.fromtimestamp(r["expires_at"], timezone.utc)
                 st.caption("Hạn artifact: " + expiry.isoformat())
@@ -190,6 +246,20 @@ with tabs[2]:
             st.code(result["agent_token"], language="text")
             st.warning("Lưu token tại máy của bạn. Khi rời trang, token không được hiển thị lại.")
     st.code("python local_runner_agent.py --api <API_URL> --configs <CONFIG_FOLDER> --env-path <LOCAL_ENV_PATH>")
+    with st.expander("Gửi lại kết quả cũ sau khi cập nhật API"):
+        st.write("Dùng khi journal đã REPORTED nhưng API cũ từng bỏ qua kết quả vì run LOST. "
+                 "Chờ agent hết run rồi dừng vòng polling; dùng đúng token agent và thư mục state cũ.")
+        st.code("python local_runner_agent.py --api <API_URL> --state <STATE_FOLDER> --resend-run <RUN_ID>")
+        st.caption("Chỉ gửi lại metrics/preflight đã có trong journal, không nhận job hoặc chạy testcase. "
+                   "Không chỉnh journal thủ công. Sau đó khởi động lại agent bình thường và làm mới lịch sử.")
+    with st.expander("Kiểm tra journal tại máy local"):
+        st.write("Journal lưu dấu vết để tránh chạy testcase hai lần. Lệnh kiểm tra chỉ đọc "
+                 "metadata, không cần token và không kết nối API.")
+        st.code("python local_runner_agent.py --state <STATE_FOLDER> --journal-status")
+        st.code("python local_runner_agent.py --state <STATE_FOLDER> --journal-status --run-id <RUN_ID>")
+        st.caption("Dùng Run ID trong lịch sử để kiểm tra riêng. REVIEW_REQUIRED hoặc mã thoát 2 "
+                   "nghĩa là cần kiểm tra local, không phải kết luận testcase thất bại. "
+                   "Kết quả có thể thay đổi khi agent đang ghi; không xóa journal/pending để ép chạy lại.")
     for a in api("GET", "/agents") or []:
         st.write(a)
         if a["active"] and st.button("Thu hồi agent", key="revoke_"+a["id"]):

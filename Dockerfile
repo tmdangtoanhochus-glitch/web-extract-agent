@@ -9,6 +9,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+COPY requirements-auth.txt .
+RUN pip install --no-cache-dir -r requirements-auth.txt
 
 # Cài trình duyệt Playwright + dependency hệ thống đi kèm
 RUN playwright install --with-deps chromium

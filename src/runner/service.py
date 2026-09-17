@@ -170,14 +170,33 @@ class Service:
     def finish(self, agent, run_id, result):
         with self.repo.transaction():
             run = self.check_agent_run(agent, run_id)
-            if run["status"] in TERMINAL:
+            late = run["status"] == "LOST" and run.get("started_at") is not None
+            if run["status"] in TERMINAL and (not late or run.get("late_result")):
                 return run
-            if run["status"] != "RUNNING":
+            if run["status"] != "RUNNING" and not late:
                 raise RunnerError("Run chưa chạy", 409)
             counts = {k: result[k] for k in ("passed", "failed", "errors", "unverified")}
             total = sum(counts.values())
             status = ("ERROR" if counts["errors"] or not total else "FAILED" if counts["failed"]
                       else "UNVERIFIED" if counts["unverified"] else "PASSED")
+            report = result.get("preflight")
+            if report is not None:
+                from .preflight_contract import PreflightReport
+                report = PreflightReport.model_validate(report).model_dump(exclude_none=True)
+                if report["status"] == "blocked":
+                    status = "ERROR"
+                    counts = {"passed": 0, "failed": 0, "errors": max(1, counts["errors"]), "unverified": 0}
+            if late:
+                received = {**counts, "status": status, "duration": result["duration"],
+                            "received_at": self.clock()}
+                if report is not None:
+                    received["preflight"] = report
+                run["late_result"] = received
+                self.repo.put("runs", run_id, run)
+                self.audit("RUN_LATE_RESULT_RECEIVED_NO_REPLAY", run["owner"], run_id)
+                return run
+            if report is not None:
+                run["preflight"] = report
             run.update(**counts, status=status, duration=result["duration"], finished_at=self.clock(),
                        expires_at=self.clock() + 7 * 86400)
             self.remove_temp(run_id)

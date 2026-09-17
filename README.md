@@ -199,4 +199,5 @@ Runner mặc định tắt. Bản tích hợp hiện hỗ trợ workbook local/H
 Record/Describe chỉ tạo steps và header testcases; người dùng tự nhập testcase.
 Settings giữ nguyên, chỉ đổi khi người dùng duyệt đề xuất có lý do. Có chuẩn bị config local,
 preflight, Inspector và repair local. Crawl không cần đăng nhập; Runner cần đăng nhập.
-AI discovery/repair chưa triển khai.
+Có discovery cấu trúc và AI đề xuất locator với bước rà soát/xác nhận local;
+không gửi raw DOM, giá trị input hoặc tự chạy lại testcase. Xem docs/RUNNER_SETUP.md.

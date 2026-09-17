@@ -48,6 +48,97 @@ def metrics():
     return {"passed": 1, "failed": 0, "errors": 0, "unverified": 0, "duration": 2}
 
 
+def test_lost_run_retains_late_result_once_without_replay_or_changing_retention(system):
+    s, repo, now, owner, _, agent, _ = system
+    run = create(s, owner, agent)
+    s.claim(agent)
+    now[0] += 301
+    s.maintenance()
+    lost = repo.get("runs", run["run_id"])
+    now[0] += 50
+    result = s.finish(agent, run["run_id"], metrics())
+    assert result["status"] == "LOST" and result["late_result"]["status"] == "PASSED"
+    assert result["late_result"]["received_at"] == now[0]
+    for field in ("finished_at", "expires_at", "notification_sent_at", "deleted_at"):
+        assert result[field] == lost[field]
+    first = result["late_result"]
+    now[0] += 60
+    assert s.finish(agent, run["run_id"], {**metrics(), "errors": 10})["late_result"] == first
+    assert s.claim(agent) is None
+    assert len([e for e in repo.all("audit") if e["event"] == "RUN_LATE_RESULT_RECEIVED_NO_REPLAY"]) == 1
+
+
+def test_late_preflight_still_blocks_false_pass_and_never_reconciles_unstarted_run(system):
+    s, repo, now, owner, _, agent, _ = system
+    run = create(s, owner, agent)
+    s.claim(agent)
+    never_started = create(s, owner, agent)
+    now[0] += 86401
+    s.maintenance()
+    report = {"status": "blocked", "active_steps": 0, "active_testcases": 0,
+        "issues": [{"sheet": "steps", "code": "NO_ACTIVE_STEPS"}], "warnings": []}
+    late = s.finish(agent, run["run_id"], {**metrics(), "preflight": report})["late_result"]
+    assert late["status"] == "ERROR" and late["passed"] == 0 and late["errors"] == 1
+    assert late["preflight"]["status"] == "blocked"
+    assert "late_result" not in s.finish(agent, never_started["run_id"], metrics())
+
+
+@pytest.mark.parametrize("expired", [False, True])
+def test_late_result_api_owner_scope_summary_and_no_resurrection(system, expired):
+    s, repo, now, owner, other, _, client = system
+    pair = s.register_agent(owner)
+    agent = s.agent(pair["agent_token"])
+    run = create(s, owner, agent)
+    s.claim(agent)
+    now[0] += 301
+    s.maintenance()
+    if expired:
+        now[0] += 6 * 86400
+        s.maintenance()
+        now[0] += 86400
+        s.maintenance()
+    headers = {"Authorization": "Bearer " + pair["agent_token"]}
+    result_path = f"/runner/agent/runs/{run['run_id']}/result"
+    stranger = s.register_agent(other)
+    assert client.post(result_path, json=metrics(), headers={
+        "Authorization": "Bearer " + stranger["agent_token"]}).status_code == 404
+    response = client.post(result_path, json=metrics(), headers=headers)
+    assert response.status_code == 200
+    assert response.json()["late_result"]["passed"] == 1
+    path = f"/runner/runs/{run['run_id']}"
+    assert client.get(path, headers=login(client, "other", "synthetic-password-2")).status_code == 404
+    summary = client.get(path + "/artifacts/summary.json", headers=login(client))
+    if expired:
+        assert summary.status_code == 404
+        assert not (s.root / "runs" / run["run_id"]).exists()
+        assert response.json()["deleted_at"] is not None
+    else:
+        assert summary.status_code == 200 and summary.json()["late_result"]["status"] == "PASSED"
+
+
+def test_preflight_metadata_round_trip_is_owner_scoped_and_cannot_claim_pass(system):
+    s, repo, _, owner, other, _, client = system
+    pair = s.register_agent(owner)
+    agent = s.agent(pair["agent_token"])
+    run = create(s, owner, agent)
+    s.claim(agent)
+    report = {"status": "blocked", "active_steps": 0, "active_testcases": 0,
+              "issues": [{"sheet": "testcases", "code": "ENTER_AND_ACTIVATE_USER_TESTCASES"}], "warnings": []}
+    headers = {"Authorization": "Bearer " + pair["agent_token"]}
+    path = f"/runner/agent/runs/{run['run_id']}/result"
+    bad = client.post(path, json={**metrics(), "preflight": {**report, "message": "synthetic-private"}}, headers=headers)
+    assert bad.status_code == 422
+    response = client.post(path, json={**metrics(), "preflight": report}, headers=headers)
+    assert response.status_code == 200 and response.json()["status"] == "ERROR" and response.json()["passed"] == 0
+    own = login(client)
+    saved = client.get(f"/runner/runs/{run['run_id']}", headers=own).json()
+    assert saved["preflight"]["issues"][0]["code"] == "ENTER_AND_ACTIVATE_USER_TESTCASES"
+    summary = client.get(f"/runner/runs/{run['run_id']}/artifacts/summary.json", headers=own).json()
+    assert summary["preflight"]["status"] == "blocked"
+    other_auth = login(client, "other", "synthetic-password-2")
+    assert client.get(f"/runner/runs/{run['run_id']}", headers=other_auth).status_code == 404
+
+
 def test_login_logout_and_hash_storage(system):
     s, repo, _, owner, _, _, client = system
     auth = login(client)

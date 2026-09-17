@@ -1,6 +1,125 @@
 # Thiết kế tích hợp Runner local với UI/GreenNode
 
-## Trạng thái triển khai và quyết định bổ sung (cập nhật 2026-09-16)
+## Trạng thái triển khai và quyết định bổ sung (cập nhật 2026-09-17)
+
+### Phase 23–25: chốt phạm vi và nghiệm thu
+
+docs/RUNNER_ROADMAP.md đối chiếu MVP gốc với các phase triển khai và là bảng
+theo dõi phần còn lại. Phase 23 hoàn tất tài liệu; phase 24 kiểm chứng triển khai,
+phase 25 UAT/sửa lỗi/bàn giao. Hai phase cuối cần bằng chứng môi trường thật.
+Không mở rộng sang autonomous self-healing, PostgreSQL hoặc multi-worker trong
+phạm vi chốt MVP hiện tại. Kết quả ghi tại docs/RUNNER_UAT_RESULTS.md.
+UI giữ /health làm liveness nginx; bổ sung /ready proxy health Streamlit để
+phân biệt process proxy còn sống với UI sẵn sàng. Docker UI local đã xác minh
+ready 200 khi Streamlit chạy, 502 khi chỉ nginx chạy. Build dùng context source
+riêng, không copy workspace/state/credential, có manifest SHA-256; xem
+docs/RUNNER_CONTAINER_SMOKE.md. Kết quả API/persistence/browser ghi riêng theo ca,
+không suy ra GreenNode hoặc UAT đã đạt từ kết quả local.
+
+### Phase 22: chẩn đoán journal không có side effect
+
+CLI `--journal-status` chạy độc lập với token, API và vòng polling. Dùng cùng
+validator với agent, chỉ trả mã lỗi và metadata trạng thái theo whitelist;
+không in nội dung/tên file/đường dẫn. Reference là hash rút gọn của tên file,
+không phải cam kết ẩn danh. Có thể chọn run ID để đối chiếu lịch sử trên UI.
+Quét tối đa 1.000 mục, không đệ quy; báo truncated nếu còn mục chưa kiểm tra.
+Không đọc nội dung pending, tên file credential hoặc đường dẫn liên kết.
+Không tạo state/lock, sửa journal, gửi kết quả hay chạy testcase. Snapshot
+không nguyên tử khi agent đang hoạt động; chẩn đoán không tự phục hồi hoặc
+suy luận tác động nghiệp vụ. Chính sách giữ bằng chứng của phase 21 giữ nguyên.
+
+### Phase 21: journal fail-closed theo từng run
+
+Journal local kiểm tra schema/state/identity/timestamp/result trước recovery,
+resend hoặc retention. Mục hỏng hay chưa ghi xong không được dùng để suy luận
+kết quả, chạy lại hoặc xóa artifact; giữ nguyên bằng chứng, chỉ bỏ qua mục đó.
+Các mục hợp lệ vẫn tiến triển. Console chỉ mã giai đoạn, không raw payload/error.
+Write dùng .pending exclusive + flush/fsync + atomic replace. Pending có sẵn không
+bị ghi đè và chặn thực thi lại cùng run ID; orphan pending cũng giữ nguyên.
+Retention có thể kéo dài với mục lỗi cho tới khi người vận hành kiểm tra local;
+không tự quarantine/delete hoặc replay để làm sạch trạng thái.
+
+### Phase 20: giữ kết quả muộn nhưng không sửa lịch sử LOST
+
+LOST không đồng nghĩa executor chưa chạy. Với run đã được claim, API nhận result
+đến muộn vào late_result (metrics/status/preflight theo contract cũ, received_at).
+Giữ nguyên status LOST, finished_at của lần mất theo dõi và toàn bộ retention.
+Chỉ nhận lần đầu, audit riêng, owner/agent authorization như kết quả thông thường.
+Summary/UI hiển thị riêng kết quả muộn. Không tạo lại artifact đã xóa hoặc replay.
+Agent CLI có --resend-run để chủ động gửi lại journal đã được API cũ ACK; không
+recover/claim/execution, single-instance lock và schema giới hạn vẫn áp dụng.
+
+### Phase 19: thử một step tách biệt với Inspector và run testcase
+
+try_step_runner.py là công cụ local do người dùng chủ động chạy, không nhận command
+từ AI/cloud. Chọn một dòng, tự điều hướng, review highlight rồi xác nhận EXECUTE <row>.
+Dùng locator builder hiện tại và thao tác Playwright trực tiếp trên ElementHandle
+đã review sau kiểm tra identity/source hash. Chỉ hỗ trợ fill/click/check/select/wait
+đơn giản, không dùng setting/env/testcase để tự resolve giá trị. Giá trị thử nhập ẩn,
+không persist hoặc gửi cloud. Workbook giữ nguyên kể cả active.
+
+Report metadata local persist ý định EXECUTION_STARTED trước side effect; hoàn tất
+chỉ là ACTION_COMPLETED, không phải PASSED. Lỗi sau khi bắt đầu là OUTCOME_UNKNOWN;
+không auto retry/replay. Mỗi lần thử là process/phiên browser mới và xác nhận riêng.
+Report không thuộc artifact run hay cloud retention. Luồng này bổ sung bước thử có
+người duyệt trong thiết kế đích, không biến Inspector thành executor hoặc cho phép
+AI tự thao tác UAT. Action phức tạp vẫn thực hiện bằng executor đầy đủ.
+
+### Phase 18: Record nhiều màn hình và đánh dấu wait/read
+
+Recorder giữ state pause/screen tại process local, dùng phím tắt Ctrl+Alt+P/N.
+Control chỉ có enum, không nhận screen name/URL/value từ website. Người dùng chủ
+động đánh dấu screen mới trước thao tác tiếp theo; tối đa 100 màn hình/1000 step.
+Phím Ctrl+Alt+W ghi wait cho phần tử trỏ tới; Ctrl+Alt+A ghi read_result_single
+css_input/exact cho input/textarea/select thông thường, thêm expected header trống.
+Không lấy actual/expected hoặc tự chạy assertion; không nhận read từ màn hình thứ
+hai do giới hạn RESULT_SCREEN của executor. Password/file/checkbox/radio/hidden
+không dùng hotkey read. Steps inactive, testcase vẫn chỉ có header, không settings.
+Inspector kiểm tra locator wait cấu trúc theo count/visibility, không thực thi
+lệnh wait/reload. Navigation, iframe/shadow DOM và assertion tự suy luận chưa có.
+
+### Phase 13–14: discovery và repair có người duyệt
+
+Quyết định này cụ thể hóa flow AI + Inspector ở mục 5–7: dùng Playwright local
+qua adapter giới hạn, không đưa raw DOM/accessibility text cho MCP/AI trên cloud.
+Người dùng tự điều hướng và đăng nhập; discover_runner.py chụp cấu trúc một màn hình,
+chỉ gồm candidate ID, tag chuẩn và CSS nth-of-type. Không có URL, text, attribute,
+input value, credential hoặc screenshot. Tối đa 100 candidate, có cờ truncated.
+Người dùng highlight theo ID, kiểm tra rồi EXPORT; cấu trúc đổi trước xuất thì chụp lại.
+
+UI nhận snapshot đã rà soát và mô tả có ID cụ thể. API đóng schema, xác thực Runner,
+AI opt-in, không persist snapshot/mô tả/response. AI chỉ chọn ID có trong mô tả và
+snapshot; Python kiểm tra action/tag và tham chiếu. Discovery xuất steps inactive
+và header testcases; testcase/settings vẫn do người dùng quản lý. Một snapshot
+không dùng để suy ra locator cho màn hình khác. Không tự khám phá nội dung nghiệp vụ.
+
+Repair AI trả ID/reason enum; Python gắn hash snapshot và action/read_method.
+Không nhận workbook/log/DOM/ảnh của run lỗi. CLI local đối chiếu proposal, yêu cầu
+người dùng mở đúng màn hình, highlight và xác nhận EXPORT; kiểm tra lại identity,
+visibility, uniqueness và hash nguồn. Bản sao giữ dữ liệu/settings, chỉ thay locator
+và đặt mọi step/testcase inactive. Không tự replay UAT. CSS vị trí có thể trỏ nhầm
+sau thay đổi layout dù vẫn unique; người dùng phải xác minh target khi highlight.
+
+Đã có AI discovery/repair theo phạm vi có người duyệt này. Autonomous navigation,
+iframe/shadow DOM, raw DOM MCP và tự sửa/chạy lại testcase chưa được triển khai.
+Các action phức tạp vẫn dùng cấu hình thủ công theo executor hiện có.
+
+Phase 15 thêm compose_runner.py để ghép nháp nhiều màn hình theo thứ tự người dùng
+chọn, tối đa 20 nháp/2000 steps. Không nhận draft chứa testcase/settings, từ chối
+tên step trùng, màn hình xen kẽ và nhiều màn hình kết quả. Sau ghép dùng prepare_runner.py
+để giữ config/testcase hiện có; không tự đổi setting hoặc activate. Phase 16 bổ sung
+ma trận nghiệm thu tại docs/RUNNER_ACCEPTANCE.md; test offline hoàn tất nhưng chưa
+nghiệm thu browser/AI/GreenNode/PostgreSQL thật. Không coi đây là hoàn tất triển khai
+vận hành hoặc mọi khả năng mở rộng trong thiết kế đích.
+
+Phase 17 bổ sung gen nhóm nhập lặp theo dispatcher run_repeat_group (các action
+fill/fill_enter/select/select_antd/force_select_antd dùng testcase và click dùng empty).
+Group liền mạch trên một screen, có ít nhất một field testcase; không chứa dữ liệu
+hoặc account. Người dùng tự nhập danh sách `;` và kiểm tra locator theo chỉ số.
+Describe UI cho chọn 1–100 khối kết quả để Python tạo đủ header expected nhóm;
+không để AI quyết định số khối chạy hoặc thay setting. Compose/prepare giữ các cột
+trống, preflight chặn nhóm action/value_source không tương thích. Runtime resolve
+placeholder local riêng từng phần tử danh sách, không đưa giá trị đó lên cloud.
 
 ### Bổ sung ranh giới crawler và Runner — phase 8
 
@@ -28,6 +147,17 @@
 
 ### Runner
 
+Phase 11 bổ sung điều khiển lịch crawler và queue RAM cho bulk, tách biệt hoàn toàn
+khỏi job/agent Runner. Pause/cancel cooperative giữa các lượt; queue/control/cookie
+không persist và không replay sau restart. Giữ deployment một process; hai worker
+thread crawler không phải local Runner. Quy tắc không tự chạy lại testcase UAT và
+không gen testcase/settings vẫn giữ nguyên. Chi tiết giới hạn tại `docs/CRAWL_SUPPORT.md`.
+
+Phase 10 bổ sung CSV toàn bộ dataset crawler qua endpoint streaming và keyset
+pagination, với lọc ngày UTC. Không thay đổi artifact Runner, quyền truy cập
+Runner hoặc retention của run; CSV chuẩn bị trên UI do người dùng chủ động xóa
+khỏi phiên, backend không tạo file artifact. Chi tiết tại `docs/CRAWL_SUPPORT.md`.
+
 Phần dưới là thiết kế đích. Bản tích hợp hiện tại hoàn thành nền tảng chạy
 workbook qua agent local và UI; chưa hoàn thành toàn bộ thiết kế đích.
 
@@ -45,7 +175,8 @@ khai không cần đăng nhập. Panel quản trị crawler nhạy cảm giữ c
   thực thi Playwright. Retention có scheduler riêng.
 - User/admin dùng password hash Argon2 và session opaque có hạn sử dụng;
   agent có token riêng, database chỉ lưu hash token. API ở prefix `/runner`.
-- **Điều chỉnh phạm vi artifact:** cloud chỉ nhận summary số liệu. Excel, log,
+- **Điều chỉnh phạm vi artifact:** cloud nhận summary số liệu và metadata preflight
+  giới hạn theo schema đóng (phase 12: mã lỗi, sheet, dòng, số lượng active). Excel, log,
   screenshot nằm local; upload/download artifact chi tiết trên cloud chưa triển
   khai. Masking là biện pháp giảm lộ dữ liệu, không bảo đảm loại bỏ mọi thông tin
   nhạy cảm. Không gửi DOM/artifact cho AI trong bản hiện tại.
@@ -60,7 +191,8 @@ khai không cần đăng nhập. Panel quản trị crawler nhạy cảm giữ c
   attribute hoặc navigation URL. Export step inactive và header testcases, không có dữ liệu mẫu
   local, không gửi recording lên cloud. Giới hạn 1000 event, chưa hỗ trợ iframe,
   shadow DOM, upload, checkbox/radio hoặc assertion tự động. Đây là một phần
-  Record Mode, chưa phải toàn bộ recorder/inspector ở mục 5–7.
+  Record Mode, chưa phải toàn bộ recorder/inspector ở mục 5–7. Phase 18 bổ sung
+  chia screen/pause thủ công và đánh dấu wait/read bằng phím tắt như mô tả trên.
 - Describe bản đầu đã có: `/runner/authoring/describe` yêu cầu đăng nhập và xác
   nhận nội dung không nhạy cảm, dùng GreenNode chat theo cấu hình runtime hiện có.
   `RUNNER_AI_ENABLED` mặc định false. AI chỉ trả steps theo schema đóng;
@@ -70,9 +202,14 @@ khai không cần đăng nhập. Panel quản trị crawler nhạy cảm giữ c
   chỉ thêm cột trống. Settings giữ nguyên trừ khi người dùng duyệt từng đề xuất có
   giải thích từ run_screen/read_and_verify; hiện chỉ đề xuất screen_flow/login_screen/result_screen.
   `preflight_runner.py` kiểm tra tĩnh sau khi người dùng nhập dữ liệu, không đọc secret.
+  Phase 12 nối kiểm tra tĩnh vào executor local trước import runner/browser và resolve
+  môi trường. Run bị chặn trả ERROR; UI hiện metadata whitelist, không nhận giá trị
+  testcase/settings/URL/selector. Không tự sửa config. Preflight pass không bảo đảm
+  locator, đăng nhập hoặc hành vi đúng. Contract Result mới là tùy chọn để nhận agent
+  cũ; triển khai API trước agent. Direct CLI docs/runner.py giữ validator riêng.
   Runner đã hỗ trợ resolve expected placeholder trước so sánh; thiếu biến báo lỗi.
-  Gen tối đa 100 step, assertion exact khi được yêu cầu; expected người dùng tự nhập. Chưa tự gen
-  repeat group hoặc toàn bộ expected của nhiều result block.
+  Gen tối đa 100 step, assertion exact khi được yêu cầu; expected người dùng tự nhập.
+  Phase 17 có repeat group và header expected nhiều result block theo số người dùng chọn.
   Không tự truy cập website, tạo run hoặc sửa testcase đang chạy. Không lưu mô tả,
   phản hồi model hoặc workbook trên server; audit chỉ ghi event và user.
 - Đây là phần lập nháp của Describe, chưa phải flow AI+MCP khám phá website ở mục 7.
@@ -87,8 +224,8 @@ khai không cần đăng nhập. Panel quản trị crawler nhạy cảm giữ c
   nhận trước xuất workbook mới. Hash nguồn chống áp sửa lên phiên bản file đã đổi.
   Giữ dữ liệu các sheet, thay locator của một dòng và đặt toàn bộ step/testcase
   inactive; thêm sheet repair_review, không sửa file gốc hoặc upload DOM/input.
-  Đây là repair do người dùng chọn target, không phải AI tự chọn. AI discovery,
-  AI repair và kiểm chứng hành vi vẫn là phase tiếp theo.
+  Đây là picker local; phase 13–14 ở trên bổ sung AI discovery/repair có người duyệt.
+  Kiểm chứng hành vi trên browser thật vẫn cần UAT riêng.
   PostgreSQL và deployment GreenNode cần kiểm chứng riêng trước vận hành.
 
 Hướng dẫn cài đặt và giới hạn: [docs/RUNNER_SETUP.md](docs/RUNNER_SETUP.md).

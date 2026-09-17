@@ -908,6 +908,7 @@ def run_repeat_group(page: Page, group_name: str, group_steps: pd.DataFrame,
             value      = value_list[i] if i < len(value_list) else ""
             if not value:
                 continue
+            value = resolve_local_reference(value)
             match action:
                 case "fill":
                     do_fill(page, step["locator_type"], loc, value)

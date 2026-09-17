@@ -1,7 +1,40 @@
 """Public crawl controls; contains no backend/storage imports."""
 from datetime import date, timedelta
-from urllib.parse import urlsplit
+from urllib.parse import urlsplit, urlencode
 import streamlit as st
+
+
+def export_controls(dataset_id, api_download):
+    with st.expander("Xuất toàn bộ dataset", expanded=False):
+        st.caption("CSV lấy toàn bộ record trước lúc bắt đầu xuất, không giới hạn theo trang đang xem. "
+                   "Bộ lọc bên dưới chỉ áp dụng cho file này; ngày tính theo UTC.")
+        query = {}
+        if st.checkbox("Lọc khoảng ngày khi xuất", key=f"export_filter_{dataset_id}"):
+            basis = st.selectbox("Loại ngày", ["Ngày crawl", "Ngày dữ liệu (as_of)"], key=f"export_basis_{dataset_id}")
+            first = st.date_input("Xuất từ ngày", key=f"export_start_{dataset_id}")
+            last = st.date_input("Xuất đến ngày", key=f"export_end_{dataset_id}")
+            query = {"date_basis": "crawled_at" if basis == "Ngày crawl" else "as_of",
+                     "start": first.isoformat(), "end": last.isoformat()}
+            st.caption("Hai đầu ngày đều bao gồm. Lọc theo as_of sẽ bỏ qua record chưa có ngày dữ liệu.")
+            if first > last:
+                st.warning("Ngày bắt đầu phải trước ngày kết thúc.")
+                return
+        path = f"/datasets/{dataset_id}/export.csv" + ("?" + urlencode(query) if query else "")
+        if st.button("Chuẩn bị CSV toàn bộ", key=f"prepare_export_{dataset_id}"):
+            st.session_state.pop("dataset_csv_download", None)
+            with st.spinner("Đang xuất dữ liệu..."):
+                data = api_download(path)
+            if data is not None:
+                st.session_state.dataset_csv_download = {"path": path, "data": data}
+        cached = st.session_state.get("dataset_csv_download")
+        if cached and cached["path"] == path:
+            st.download_button("Tải CSV toàn bộ", data=cached["data"], file_name=f"{dataset_id}-export.csv",
+                               mime="text/csv", key=f"download_export_{dataset_id}")
+            st.caption("File đã chuẩn bị không tự cập nhật theo lịch crawl. Bấm chuẩn bị lại để lấy dữ liệu mới. "
+                       "Nội dung giống công thức bảng tính được xuất dạng văn bản.")
+        if cached and st.button("Xóa file đã chuẩn bị khỏi phiên", key=f"clear_export_{dataset_id}"):
+            st.session_state.pop("dataset_csv_download", None)
+            st.rerun()
 
 
 def options_controls(fields):
@@ -38,7 +71,7 @@ def options_controls(fields):
     return options
 
 
-def run_controls(urls, bulk_enabled=False):
+def run_controls(urls, bulk_enabled=False, busy=False):
     with st.form("crawl_with_cookie", clear_on_submit=True):
         with st.expander("Nguồn cần đăng nhập: dán cookie cho lượt kéo này"):
             st.markdown("""1. Mở website nguồn, tự đăng nhập bằng trình duyệt.
@@ -53,8 +86,8 @@ Chỉ dùng phiên bạn được phép truy cập, qua kết nối HTTPS khi tr
             origins = sorted({f"{urlsplit(url).scheme}://{urlsplit(url).netloc}" for url in urls})
             origin = st.selectbox("Nguồn được dùng cookie", origins) if origins else None
             cookie = st.text_input("Cookie cho lượt kéo", type="password")
-        submitted = st.form_submit_button("🚀 Chạy crawl", type="primary")
-        preview = st.form_submit_button("Xem trước đợt kéo", disabled=not bulk_enabled)
+        submitted = st.form_submit_button("🚀 Chạy crawl", type="primary", disabled=busy)
+        preview = st.form_submit_button("Xem trước đợt kéo", disabled=not bulk_enabled or busy)
         st.caption("Xem trước bảng chỉ tải trang đầu, không lưu record. Cookie được xóa sau mỗi lần gửi; cần dán lại khi chạy thật.")
     return submitted, origin, cookie, preview
 
@@ -83,6 +116,9 @@ def report_panel(api_post):
 
 
 def retry_panel(api_post):
+    active = st.session_state.get("active_crawl_job")
+    if active and not active.get("handled"):
+        return
     candidates = [entry for entry in st.session_state.get("run_log", [])
                   if entry.get("failed") and entry.get("_retry_config") and not entry.get("retried_by")
                   and entry["_retry_config"].get("storage_mode", "db") == "db"

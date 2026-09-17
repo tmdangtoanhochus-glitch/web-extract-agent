@@ -26,11 +26,17 @@ class WorkbookStep(Strict):
     dropdown_selector: Literal["", "visible", "not_hidden"] = ""
     match_type: Literal["", "exact", "contains"] = ""
     prefill_check: Literal["Y", "N"] = "N"
-    group: Literal[""] = ""
+    group: Annotated[str, Field(pattern=r"^(?:[a-z][a-z0-9_]{0,49})?$")] = ""
     read_method: Literal["", "css_input", "css_disabled", "label_input", "label_span_title", "button_regex", "sibling_span"] = ""
 
     @model_validator(mode="after")
     def coherent(self):
+        if self.group:
+            # run_repeat_group has a narrower action dispatcher than run_step.
+            if not ((self.action in {"fill", "fill_enter", "select", "select_antd", "force_select_antd"}
+                     and self.value_source == "testcase") or
+                    (self.action == "click" and self.value_source == "empty")):
+                raise ValueError("Repeat group supports testcase values or an empty click only")
         if self.action in VALUE_ACTIONS:
             if self.value_source not in {"testcase", "account", "keyword"}:
                 raise ValueError("Value action needs a reference")
@@ -51,7 +57,9 @@ class WorkbookStep(Strict):
         return self
 
 
-def testcase_columns(steps):
+def testcase_columns(steps, result_blocks=1):
+    if type(result_blocks) is not int or not 1 <= result_blocks <= 100:
+        raise ValueError("Choose 1..100 result blocks")
     columns = list(BASE_CASE_COLUMNS)
     for step in steps:
         name = None
@@ -62,10 +70,23 @@ def testcase_columns(steps):
         elif step["action"] in READ_ACTIONS:
             name = "expected_" + step["step"].removeprefix("read_")
             if step["action"] != "read_result_single":
-                name += "_0"
+                for index in range(result_blocks):
+                    if f"{name}_{index}" not in columns:
+                        columns.append(f"{name}_{index}")
+                continue
         if name and name not in columns:
             columns.append(name)
+    if len(columns) > 16384:
+        raise ValueError("Too many testcase columns for Excel")
     return columns
+
+
+def header_result_blocks(steps, headers):
+    """Validate complete header-only drafts, including explicit expected block count."""
+    for count in range(1, 101):
+        if headers == testcase_columns(steps, count):
+            return count
+    raise ValueError("Testcase headers do not match steps and contiguous result blocks")
 
 
 class WorkbookPlan(Strict):
@@ -86,4 +107,19 @@ class WorkbookPlan(Strict):
             raise ValueError("Data field collides with expected field")
         if len({s.screen for s in self.steps if s.action in READ_ACTIONS}) > 1:
             raise ValueError("Executor supports one result screen per workbook")
+        groups = {}
+        previous = None
+        closed = set()
+        for step in self.steps:
+            if step.group != previous:
+                if previous:
+                    closed.add(previous)
+                if step.group and step.group in closed:
+                    raise ValueError("Repeat group steps must be contiguous")
+                previous = step.group
+            if step.group:
+                groups.setdefault(step.group, []).append(step)
+        for members in groups.values():
+            if len({s.screen for s in members}) != 1 or not any(s.value_source == "testcase" for s in members):
+                raise ValueError("Repeat group needs testcase values on one screen")
         return self

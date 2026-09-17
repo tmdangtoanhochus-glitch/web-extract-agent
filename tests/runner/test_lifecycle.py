@@ -1,8 +1,45 @@
 import json
 
 import httpx
+import pytest
 
 from runner_agent.client import LocalAgent, write_json
+
+
+def test_explicit_resend_of_old_acknowledged_result_does_not_claim_or_execute(tmp_path):
+    requests = []
+    def handler(req):
+        requests.append(req)
+        return httpx.Response(200, json={})
+    agent = LocalAgent("http://localhost", "fake", tmp_path / "no-configs", tmp_path / "state",
+        client=httpx.Client(base_url="http://localhost", transport=httpx.MockTransport(handler)))
+    path = agent.state / "journal" / "run1.json"
+    entry = {"run_id": "run1", "state": "REPORTED", "finished_at": 10,
+        "result": {"passed": 1, "failed": 0, "errors": 0, "unverified": 0, "duration": 2}}
+    write_json(path, entry)
+    agent.resend_result("run1")
+    assert len(requests) == 1 and requests[0].url.path == "/runner/agent/runs/run1/result"
+    assert json.loads(requests[0].content) == entry["result"]
+    assert json.loads(path.read_text()) == entry
+    assert not list((agent.state / "runs").iterdir())
+
+
+@pytest.mark.parametrize("change", [{"state": "RUNNING"}, {"run_id": "other"},
+    {"result": {"passed": "synthetic-private"}},
+    {"result": {"passed": 1, "failed": 0, "errors": 0, "unverified": 0, "duration": 2, "message": "synthetic-private"}},
+    {"result": {"passed": 1, "failed": 0, "errors": 0, "unverified": 0, "duration": float("nan")}}])
+def test_explicit_resend_rejects_unfinished_or_untrusted_journal_before_http(tmp_path, change):
+    def forbidden(req): pytest.fail("Invalid journal must not be sent")
+    agent = LocalAgent("http://localhost", "fake", tmp_path, tmp_path / "state",
+        client=httpx.Client(base_url="http://localhost", transport=httpx.MockTransport(forbidden)))
+    path = agent.state / "journal" / "run1.json"
+    entry = {"run_id": "run1", "state": "REPORTED", "finished_at": 10,
+        "result": {"passed": 1, "failed": 0, "errors": 0, "unverified": 0, "duration": 2}, **change}
+    write_json(path, entry)
+    original = path.read_bytes()
+    with pytest.raises(ValueError):
+        agent.resend_result("run1")
+    assert path.read_bytes() == original
 
 
 def test_agent_crash_recovery_reports_error_and_deletes_temp(tmp_path):

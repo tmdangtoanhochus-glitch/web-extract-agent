@@ -129,3 +129,117 @@ def test_retry_uses_original_config_and_fresh_cookie_without_retaining_it(monkey
     assert body["field_descriptions"] == {"id": "Identifier"}
     assert body["cookie_origin"] == "https://example.test" and body["cookie_header"] == "session=synthetic"
     assert "cookie_header" not in app.session_state["run_log"][-1]["_retry_config"]
+
+
+def test_export_all_is_explicit_and_cached_file_hidden_when_filter_changes(monkeypatch):
+    calls = []
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, path):
+            calls.append(path)
+            request = httpx.Request("GET", "http://test" + path)
+            if path == "/datasets":
+                return httpx.Response(200, json=[{"dataset_id": "history", "dataset_name": "History", "schema_signature": ["id"]}], request=request)
+            if "export.csv" in path:
+                return httpx.Response(200, content=b"data.id\r\n1\r\n", request=request)
+            return httpx.Response(200, json=[], request=request)
+    monkeypatch.setattr(httpx, "Client", Client)
+    app = AppTest.from_file(str(PAGE))
+    app.session_state["step"] = 4
+    app.run()
+    assert not app.exception and not any("export.csv" in p for p in calls)
+    next(w for w in app.button if w.label == "Chuẩn bị CSV toàn bộ").click().run()
+    assert app.session_state["dataset_csv_download"]["path"] == "/datasets/history/export.csv"
+    assert len(app.get("download_button")) == 1
+    next(w for w in app.checkbox if w.label == "Lọc khoảng ngày khi xuất").check().run()
+    assert not app.exception and len(app.get("download_button")) == 0
+    next(w for w in app.button if w.label == "Chuẩn bị CSV toàn bộ").click().run()
+    assert "date_basis=crawled_at" in app.session_state["dataset_csv_download"]["path"]
+    next(w for w in app.button if w.label == "Xóa file đã chuẩn bị khỏi phiên").click().run()
+    assert "dataset_csv_download" not in app.session_state
+
+
+def test_current_page_csv_escapes_formula_cells_and_headers():
+    import ast
+    import csv
+    import io
+    tree = ast.parse(PAGE.read_text(encoding="utf-8"))
+    function = next(node for node in tree.body if isinstance(node, ast.FunctionDef) and node.name == "_records_to_csv")
+    namespace = {"csv": csv, "io": io}
+    exec(compile(ast.Module(body=[function], type_ignores=[]), str(PAGE), "exec"), namespace)
+    content = namespace["_records_to_csv"]([{"record_id": "r", "source_url": "https://example.test",
+        "crawled_at": "2026-09-16", "data": {"=header": "\t=SUM(1,2)", "number": -12}}])
+    rows = list(csv.reader(io.StringIO(content)))
+    assert "'=header" in rows[0] and "'\t=SUM(1,2)" in rows[1] and "-12" in rows[1]
+
+
+def test_background_submission_and_pause_resume_controls(monkeypatch):
+    import copy
+    calls = []
+    state = {"value": "running"}
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, path, json, headers=None):
+            calls.append((path, copy.deepcopy(json), headers))
+            if path == "/crawl-jobs":
+                data = {"id": "job1", "control": "synthetic-control", "state": "queued"}
+            else:
+                state["value"] = "paused" if json["action"] == "pause" else "running"
+                data = {"state": state["value"]}
+            return httpx.Response(200, json=data, request=httpx.Request("POST", "http://test" + path))
+        def get(self, path, headers=None):
+            assert headers == {"X-Crawl-Control": "synthetic-control"}
+            return httpx.Response(200, json={"id": "job1", "state": state["value"],
+                "progress": {"sources": 1, "source_index": 1, "requests": 2, "processed": 1,
+                             "request_id": "00000000-0000-0000-0000-000000000001"}},
+                request=httpx.Request("GET", "http://test" + path))
+    monkeypatch.setattr(httpx, "Client", Client)
+    app = AppTest.from_file(str(PAGE))
+    app.session_state["step"] = 3
+    app.session_state["urls"] = ["https://example.test/?page={page}"]
+    app.session_state["fields"] = [{"name": "id", "desc": "Identifier"}]
+    app.session_state["dataset_name"] = "History"
+    app.run()
+    next(w for w in app.checkbox if w.label == "Kéo nhiều lượt / kéo bảng").check().run()
+    next(w for w in app.text_input if w.label == "Cookie cho lượt kéo").set_value("session=synthetic-cookie")
+    next(w for w in app.button if w.label == "🚀 Chạy crawl").click().run()
+    assert not app.exception
+    assert calls[0][0] == "/crawl-jobs"
+    assert calls[0][1]["requests"][0]["cookie_header"] == "session=synthetic-cookie"
+    assert "cookie_header" not in app.session_state["active_crawl_job"]["configs"][0]
+    next(w for w in app.button if w.label == "Tạm dừng crawl").click().run()
+    assert not app.exception and state["value"] == "paused"
+    next(w for w in app.button if w.label == "Tiếp tục crawl").click().run()
+    assert not app.exception and state["value"] == "running"
+
+
+def test_schedule_pause_and_timing_edit_do_not_change_crawl_config(monkeypatch):
+    calls = []
+    job = {"job_id": "j1", "dataset_id": "d1", "url": "https://example.test/", "enabled": True,
+           "trigger_type": "interval", "trigger_args": {"hours": 2}, "timezone": "UTC"}
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, path):
+            data = [job] if path == "/schedules" else [{"dataset_id": "d1", "dataset_name": "History", "schema_signature": ["id"]}] if path == "/datasets" else []
+            return httpx.Response(200, json=data, request=httpx.Request("GET", "http://test" + path))
+        def patch(self, path, json):
+            calls.append((path, dict(json)))
+            job.update(json)
+            return httpx.Response(200, json=job)
+    monkeypatch.setattr(httpx, "Client", Client)
+    app = AppTest.from_file(str(PAGE))
+    app.session_state["step"] = 5
+    app.run()
+    next(w for w in app.button if w.label == "Tạm dừng lịch").click().run()
+    assert not app.exception and job["enabled"] is False
+    next(w for w in app.number_input if w.label == "Chu kỳ mới (giờ)").set_value(6)
+    next(w for w in app.button if w.label == "Lưu thời gian mới").click().run()
+    assert not app.exception and job["trigger_args"]["hours"] == 6 and job["enabled"] is False
+    assert all(set(body) <= {"enabled", "trigger_type", "trigger_args"} for _, body in calls)
+    assert job["dataset_id"] == "d1" and job["url"] == "https://example.test/"

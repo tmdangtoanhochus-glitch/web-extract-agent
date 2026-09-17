@@ -18,3 +18,14 @@ output
 .pytest_cache
 .venv
 venv
+# Local authoring inputs and developer state must not enter cloud images.
+.claude
+.codex
+.agents
+config
+**/*.xlsx
+**/*.xlsm
+**/*credentials*.json
+**/secrets.toml
+**/discovery.json
+**/Repair_Proposal.json

@@ -175,7 +175,7 @@ def preview_bulk(*, url, options, field_descriptions, fetcher, storage_mode="db"
 def run_bulk(*, url, field_descriptions, options, fetcher, ai_client, storage,
              dataset_id=None, dataset_name=None, storage_mode="db", file_path=None,
              write_mode="append", key_field=None, confidence_threshold=0.7, image_fields=None,
-             retry_indices=None):
+             retry_indices=None, checkpoint=None, progress=None):
     plans = plan_urls(url, options)
     validate_options(field_descriptions, options, storage_mode, write_mode, image_fields)
     indexed_plans = list(enumerate(plans, 1))
@@ -207,8 +207,31 @@ def run_bulk(*, url, field_descriptions, options, fetcher, ai_client, storage,
                 break
             offset += len(records)
     results, saved, skipped = [], 0, 0
+    cancelled = False
     sources = {source.source_url for source in storage.list_sources(dataset_id, active_only=True)} if dataset else set()
     for index, (target, first, last) in indexed_plans:
+        if checkpoint:
+            # Release the batch serialization lock while a user pauses so other
+            # users and scheduled crawls can proceed. Refresh dedup after reacquiring.
+            _bulk_lock.release()
+            try:
+                proceed = checkpoint()
+            finally:
+                _bulk_lock.acquire()
+            if not proceed:
+                cancelled = True
+                break
+            if dataset and options.mode == "table":
+                offset = 0
+                while True:
+                    current = storage.list_records(dataset_id, limit=1000, offset=offset)
+                    seen.update(r.content_hash for r in current)
+                    if len(current) < 1000:
+                        break
+                    offset += len(current)
+        if progress:
+            progress({"requests": len(indexed_plans), "processed": len(results), "current_index": index,
+                      "saved": saved, "skipped": skipped, "dataset_id": dataset_id})
         stage = "fetch"
         try:
             if options.mode == "fields":
@@ -251,7 +274,10 @@ def run_bulk(*, url, field_descriptions, options, fetcher, ai_client, storage,
                             "detail": str(exc) if isinstance(exc, TableError) else
                             ("Không lưu được dữ liệu; báo admin trước khi thử lại" if stage == "save" else
                              "Không tải được nguồn; kiểm tra URL, cookie hoặc báo admin")})
+        if progress:
+            progress({"processed": len(results), "saved": saved, "skipped": skipped,
+                      "failed": sum(r["status"] not in {"saved", "unchanged", "empty"} for r in results)})
     failed = sum(r["status"] not in {"saved", "unchanged", "empty"} for r in results)
-    return {"status": "partial" if failed else "completed", "dataset_id": dataset_id,
+    return {"status": "cancelled" if cancelled else "partial" if failed else "completed", "dataset_id": dataset_id,
             "file_path": file_path, "saved": saved, "skipped": skipped, "failed": failed,
             "requests": len(indexed_plans), "results": results}

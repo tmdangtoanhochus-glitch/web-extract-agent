@@ -95,7 +95,12 @@ def inspect_screen(page, workbook, screen_index, builder=None):
         action = step["action"].lower()
         checks = []
         if action == "wait":
-            checks.append({"kind": "wait", "status": "MANUAL_REVIEW", "match_count": None})
+            from .authoring import STRUCTURAL_SELECTOR
+            selector = step.get("wait_selector", "")
+            if len(selector) <= 2000 and STRUCTURAL_SELECTOR.fullmatch(selector):
+                checks.append(_check(page, "wait", "css", selector, builder))
+            else:
+                checks.append({"kind": "wait", "status": "MANUAL_REVIEW", "match_count": None})
         elif action in {"read_result", "read_result_single", "read_result_group"}:
             if step.get("read_method") in {"css_input", "css_disabled"}:
                 checks.append(_check(page, "target", "css", step["locator"], builder))

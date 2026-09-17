@@ -1,6 +1,251 @@
 # Changelog
 
+## Runner integration — cập nhật 2026-09-17
+
+### Phase 23: chốt roadmap MVP và bằng chứng nghiệm thu
+- Thêm docs/RUNNER_ROADMAP.md đối chiếu bốn giai đoạn MVP trong V2 với các
+  phase triển khai, phạm vi chốt và tiêu chí hoàn tất phase 23–25.
+- Thêm docs/RUNNER_UAT_RESULTS.md ghi rõ các kiểm tra chưa chạy; không coi test
+  offline là bằng chứng Docker/GreenNode/browser thật đã đạt.
+- Phase 23 hoàn tất tài liệu. Baseline gần nhất: 510 test offline pass;
+  không chạy lại suite chỉ cho thay đổi tài liệu.
+
+### Phase 24: kiểm chứng triển khai — đang thực hiện
+- Rà soát Dockerfile API/UI, compose và nginx. UI /health chỉ là liveness nginx;
+  thêm /ready proxy tới health của Streamlit với connect/read timeout 2/5 giây.
+  Đã kiểm chứng UI container: health/ready/trang gốc 200; chỉ nginx thì ready 502.
+- Thêm prepare_container_context.py: source được chọn rõ, không copy workspace,
+  không dotenv/state/workbook; từ chối symlink/junction, chuẩn hóa LF, manifest SHA-256.
+  Context 58 file có các module workbook dùng chung mà API import khi có yêu cầu.
+- Thêm container_probe.py và hướng dẫn RUNNER_CONTAINER_SMOKE.md. Probe chỉ chạy
+  khi đánh dấu container thử, không dùng secret hoặc mạng ngoài; có ca workbook
+  chỉ header, phân quyền Runner, SQLite persistence và Chromium HTML tổng hợp.
+- Docker local 29.8.0, cấu hình client rỗng riêng. Image UI build thành công;
+  API đang kiểm chứng. Không dùng compose mặc định hoặc mount dữ liệu thật.
+- Regression: **513 test offline pass**, một warning Starlette/AnyIO có sẵn;
+  3 test context chạy lại đạt sau cập nhật danh sách source.
+- Checklist triển khai/UAT và nơi ghi bằng chứng đã có. Phase 24–25 chưa hoàn tất.
+
+### Phase 22: chẩn đoán journal local chỉ đọc
+- Thêm `--journal-status`, tùy chọn `--run-id`: chạy trước luồng token/agent/API,
+  không tạo state/lock, không recover, resend, cleanup hoặc thực thi testcase.
+- Dùng chung validator với agent; phân loại JSON/schema/identity/timestamp/result
+  sai, quá lớn, ghi dở hoặc không đọc được. Không đọc nội dung pending, file có
+  tên credential hoặc symlink; không in payload, đường dẫn hay tên file thô.
+- Báo cáo JSON giới hạn 1.000 mục, có cờ truncated và reference từ hash tên file.
+  Đây là snapshot không nguyên tử; agent đang ghi có thể làm kết quả thay đổi.
+  Mã thoát 0 là OK, 2 là cần kiểm tra. UI và hướng dẫn local có lệnh sử dụng.
+- Kiểm chứng: **510 test pass** offline; một warning Starlette/AnyIO có sẵn.
+  Bao phủ giới hạn quét, phân loại lỗi, không sửa file, không đọc pending/file
+  bị loại và CLI không khởi tạo agent/token/HTTP. Chưa chạy UAT thật.
+
+### Phase 21: cô lập journal hỏng và ghi bền vững
+- Agent kiểm tra từng journal: giới hạn 128 KB, JSON/schema/state, run_id phải
+  khớp tên file, timestamp hữu hạn và payload metrics/preflight theo contract đóng.
+  Journal sai/unreadable được giữ nguyên, không forward dữ liệu tùy ý hoặc cleanup
+  artifact của run khác. Các mục hợp lệ vẫn recover/resend/retention bình thường.
+- Lỗi ghi ACK, recovery hoặc retention được cô lập theo mục; cảnh báo chỉ mã giai
+  đoạn, không in raw JSON/exception. Mỗi giai đoạn cảnh báo một lần trong process.
+- Ghi journal dùng file .pending tạo exclusive, flush/fsync trước atomic replace.
+  Không ghi đè pending có sẵn. Pending dở chặn replay/cleanup/resend của đúng run
+  để giữ bằng chứng, không chặn các run khác. Không tự suy luận trạng thái từ file dở.
+- Cleanup không ghi lại journal chưa đổi. --resend-run dùng cùng validator; không
+  sửa journal thủ công hoặc xóa dấu vết để ép chạy lại. CLAUDE.md/crawler không đổi.
+- Kiểm chứng: **505 test pass** offline, một deprecation warning Starlette/AnyIO
+  có sẵn. Bao phủ journal JSON/schema/size/timestamp sai, pending dở, chặn replay,
+  giữ artifact, identity chống xóa nhầm và tiếp tục gửi mục tốt sau lỗi ghi ACK.
+
+### Phase 20: kết quả nhận muộn sau mất kết nối
+- Sửa trường hợp backend đã đánh dấu LOST nhưng agent hoàn tất và gửi kết quả sau đó:
+  lưu late_result metadata đầu tiên, gồm metrics/status tính từ metrics/preflight và
+  thời điểm nhận. Không đổi LOST, mốc mất theo dõi, hạn lưu, thông báo hoặc deleted_at.
+- UI phân biệt kết quả agent báo muộn với trạng thái backend; summary JSON có cùng
+  metadata. Agent khác/user khác không được gửi/đọc; gửi trùng không đổi kết quả
+  đầu tiên hoặc tạo audit trùng. Run chưa từng được claim không nhận late_result.
+- Artifact đã xóa không được tạo lại. Không claim/replay testcase; audit riêng
+  RUN_LATE_RESULT_RECEIVED_NO_REPLAY, chỉ lưu event/user/run/time.
+- Thêm --resend-run cho agent: người dùng chủ động gửi lại metrics/preflight từ
+  journal PENDING_RESULT/REPORTED bằng đúng agent. Không recover/cleanup/claim/run;
+  khóa single-instance vẫn áp dụng. Journal sai schema/giá trị bị chặn trước HTTP.
+  Dùng sau nâng API để khôi phục metadata mà phiên bản cũ từng ACK nhưng bỏ qua.
+- Không đọc/sửa credential, settings hoặc testcase, không thay CLAUDE.md hay crawler.
+- Kiểm chứng cuối phase 20: **492 test pass** offline, một deprecation warning
+  Starlette/AnyIO có sẵn; gồm quyền sở hữu, idempotence, retention, không phục hồi
+  artifact đã xóa, gửi lại journal và UI phân biệt LOST/kết quả nhận muộn.
+
+### Phase 19: chạy thử một step có xác nhận local
+- Thêm try_step_runner.py: chọn dòng workbook, người dùng tự điều hướng, chọn tab,
+  review phần tử highlight và gõ EXECUTE <row>. Chỉ thực hiện một thao tác thật;
+  không tự chạy thử từ AI/UI, không bật active, không sửa source/settings/testcase.
+- Hỗ trợ fill/click/check/select trực tiếp và wait CSS cấu trúc. Các bước group,
+  force/prefill, post-action wait, đọc kết quả hoặc action phức tạp dùng Runner đầy đủ.
+  Fill/select lấy giá trị thử qua đầu vào ẩn, từ chối fallback echo; không lấy giá trị
+  testcase hoặc đọc file credential. Giá trị không ghi vào report/log của công cụ.
+- Dùng builder locator của runner; sau xác nhận kiểm tra hash workbook và identity,
+  uniqueness/visibility, thực thi trên chính ElementHandle đã review. Không resolve
+  lại selector để thao tác trên phần tử thay thế.
+- Persist EXECUTION_STARTED trước side effect; lỗi sau khi bắt đầu là OUTCOME_UNKNOWN,
+  không retry. ACTION_COMPLETED không phải PASS testcase. Report JSON chỉ metadata,
+  không ghi đè report có sẵn, cập nhật bằng atomic replace; restart không replay.
+- UI/hướng dẫn/V2 có luồng sử dụng và phân biệt với Inspector chỉ đọc. Không tác động
+  queue/scheduler crawler, không thay CLAUDE.md. Browser/UAT thật chưa được kiểm chứng.
+- Kiểm chứng: **481 test pass** offline (20 test mới), một deprecation warning
+  Starlette/AnyIO có sẵn. Bao phủ từng action, đúng một attempt, hủy, source/target đổi,
+  locator thiếu/ẩn/trùng, lỗi ghi intent, kết quả không xác định và từ chối action phức tạp.
+
+### Phase 18: Record nhiều màn hình, pause và đánh dấu wait/read
+- Ctrl+Alt+N tạo screen kế tiếp, Ctrl+Alt+P pause/resume ghi trong phiên local;
+  không lấy URL hoặc tự suy luận chuyển màn hình. Hiển thị trạng thái cố định
+  ở góc browser, tối đa 100 screen/1000 event, từ chối control payload ngoài enum.
+- Ctrl+Alt+W ghi wait theo CSS cấu trúc; Ctrl+Alt+A đánh dấu read_result_single
+  cho input/textarea/select với expected header trống. Không đọc input value,
+  text hoặc expected; không chạy thao tác mới trên website. Chặn read ở screen
+  thứ hai và loại password/file/checkbox/radio/hidden khỏi hotkey read.
+- Export giữ step inactive, không testcase/settings. Lỗi dựng workbook không
+  để lại output rỗng. Inspector chỉ kiểm tra count/visibility của wait cấu trúc;
+  các wait command phức tạp vẫn cần kiểm tra thủ công, không được execute bởi Inspector.
+- Cập nhật UI, hướng dẫn và thiết kế V2; CLAUDE.md giữ nguyên. Browser/hotkey thật
+  cần người vận hành kiểm chứng, test hiện dùng browser giả lập.
+- Kiểm chứng: **461 test pass** offline, một deprecation warning Starlette/AnyIO
+  có sẵn; bao phủ control/screen/pause, read header-only, từ chối read khác screen,
+  không để lại output rỗng và kiểm tra structural wait không thực thi lệnh.
+
+### Phase 17: gen nhóm lặp và header nhiều khối kết quả
+- Describe hỗ trợ group được người dùng yêu cầu, liền mạch trên một màn hình và
+  dùng đúng action của run_repeat_group. Không sinh giá trị danh sách; người dùng
+  tự nhập các giá trị phân cách bằng dấu chấm phẩy trong testcase.
+- Người dùng chọn 1–100 khối kết quả ở UI; Python sinh đủ expected_<field>_<index>
+  cho read_result/read_result_group. Đây chỉ là header trống, không thay số lần
+  thực thi hoặc setting. Chuỗi header sai/thiếu block, xung đột input/expected,
+  quá giới hạn cột Excel bị từ chối; compose/prepare giữ đủ các header đã chọn.
+- Preflight chặn INVALID_REPEAT_GROUP khi action/value_source không được dispatcher
+  nhóm lặp hỗ trợ hoặc nhóm không có testcase-valued step, tránh bỏ qua âm thầm.
+- Runner resolve từng placeholder local sau tách danh sách nhóm lặp, register vào
+  redactor như luồng step thường; thiếu biến báo lỗi, không truyền literal placeholder
+  xuống browser. Kiểm thử chỉ dùng giá trị giả, không đọc credential thật.
+- Suite đầy đủ sau thay đổi gen/resolve: **456 test pass**, một deprecation warning
+  Starlette/AnyIO. Sau bổ sung preflight group, chạy lại nhóm repeat/preflight/
+  compose/workbook generation: **44 pass, 413 deselected**.
+
+### Phase 13: discovery cấu trúc local và AI gắn locator
+- Thêm discover_runner.py: người dùng tự điều hướng/đăng nhập, chọn tab, highlight
+  candidate theo ID và xác nhận EXPORT. Chỉ xuất tag chuẩn và CSS theo vị trí;
+  không thu text, URL, input value, attribute hoặc DOM thô. Tối đa 100 candidate/màn hình.
+- API/UI discovery yêu cầu đăng nhập và xác nhận rà soát; dùng AI runtime opt-in
+  hiện có. AI chỉ được chọn ID người dùng nêu trong mô tả, kiểm tra action/tag,
+  tham chiếu cột và một màn hình/snapshot. Locator chỉ lấy từ snapshot hợp lệ.
+- Nháp có đủ cột steps inactive và header testcases; không sinh settings, testcase,
+  dữ liệu input/expected. Không chạy browser ở server, không tạo run hay lưu snapshot
+  trong DB/audit. Giới hạn hai yêu cầu AI đồng thời dùng chung Describe.
+
+### Phase 14: AI đề xuất repair, xác nhận lại tại browser local
+- AI chỉ trả candidate ID và reason enum; Python gắn hash snapshot, action/read_method.
+  UI cho tải proposal JSON, không upload workbook hoặc artifact lỗi.
+- repair_runner.py nhận --snapshot/--proposal, đối chiếu hash và action, highlight
+  phần tử trên màn hình người dùng tự mở. Phải xác nhận EXPORT, kiểm tra lại
+  identity/visibility/uniqueness và hash workbook mới xuất bản sao inactive.
+- Giữ nguyên source, testcase và settings; không ghi đè output hoặc chạy lại UAT.
+  Snapshot/proposal không đúng schema, candidate chưa chỉ định hoặc sai tag bị từ chối.
+- Quyết định kiến trúc: dùng adapter Playwright local với snapshot cấu trúc thay
+  MCP raw DOM; khám phá/repair có người duyệt, không tự điều hướng hoặc thao tác UAT.
+  Không suy đoán ngữ nghĩa từ cấu trúc; iframe/shadow DOM và action phức tạp cần
+  cấu hình thủ công. Tài liệu V2 và hướng dẫn phản ánh phạm vi này.
+- Kiểm chứng phase 13–14 ban đầu: 43 test discovery/planner/UI pass offline.
+
+### Phase 15: ghép nhiều màn hình và kiểm chứng luồng chuẩn bị
+- Thêm compose_runner.py ghép 1–20 nháp theo thứ tự tường minh, tối đa 2000 steps;
+  đủ cột steps/header testcases, không sinh testcase hoặc settings. Source giữ nguyên,
+  không ghi đè output, từ chối file đã có testcase/settings để tránh bỏ mất dữ liệu.
+- Từ chối tên step trùng, screen bị xen kẽ, nhiều result screen, xung đột cột input/
+  expected và step active. Dùng prepare_runner.py sau ghép để giữ dữ liệu/config hiện có;
+  setting chỉ thay đổi khi người dùng duyệt từng đề xuất.
+- Luồng kiểm thử discovery → ghép nhiều màn hình → giữ dữ liệu user/settings →
+  preflight chặn đến khi user tự activate. Bổ sung test UI xác nhận gửi AI và logout.
+- Toàn bộ **448 test pass** offline, 1 cảnh báo deprecation Starlette/AnyIO có sẵn.
+  Bao gồm crawler và Runner; không gọi mạng/AI/credential hoặc browser UAT thật.
+
+### Phase 16: hướng dẫn nghiệm thu và đóng gói
+- Thêm docs/RUNNER_ACCEPTANCE.md: trạng thái từng phần, thứ tự nâng API/UI/agent,
+  điều kiện lưu trữ/single process, kiểm thử UAT người vận hành tự chạy và cách báo
+  kết quả chỉ bằng mã/số đếm đã che dữ liệu. Chưa thực hiện deployment thật.
+- Dockerfile API tổng hợp cài requirements-auth để bật Runner có Argon2/openpyxl
+  như Dockerfile.api. Docker context loại workbook/config local, state công cụ dev
+  và các tên snapshot/proposal mặc định. Không đổi config runtime hoặc credential.
+- Docker build, PostgreSQL, GreenNode và UAT thật chưa được xác nhận. Không coi
+  test offline là nghiệm thu vận hành; CLAUDE.md giữ nguyên.
+
+### Phase 12: preflight bắt buộc trước executor và chẩn đoán trên UI
+- Executor local chạy preflight trước khi import runner/browser hoặc resolve
+  môi trường. Workbook lỗi tạo summary ERROR và preflight.json, không chạy UAT.
+  Kiểm tra thêm action/locator_type/value_source hợp lệ và URL HTTP(S).
+- Report chỉ có status, số lượng active, mã lỗi cố định, sheet và số dòng; giới hạn
+  100 lỗi/100 cảnh báo và cờ truncated. Schema đóng từ chối message/code tùy ý.
+- Agent gửi metadata cùng metrics, giữ trong journal khi cần gửi lại kết quả;
+  không replay testcase. Workbook lỗi ngay ở validator agent có mã INVALID_WORKBOOK.
+- API lưu metadata theo quyền owner/admin, bổ sung vào summary JSON; report bị chặn
+  không thể dẫn đến PASSED kể cả agent gửi nhầm số passed. Run cũ/agent cũ vẫn nhận
+  metrics như trước. Cần nâng API trước agent để nhận contract bổ sung.
+- UI lịch sử chỉ ra run bị chặn trước browser và nơi cần sửa workbook local.
+  Không tự sửa settings/locator, sinh testcase hoặc bật active; qua preflight tĩnh
+  không có nghĩa locator/đăng nhập/assertion đã được kiểm chứng trên browser thật.
+
+- Kiểm thử offline: toàn bộ 417 test pass; chạy lại nhóm preflight sau khi bổ sung
+  tình huống gửi lại kết quả: 12 pass. Có 1 cảnh báo deprecation Starlette/AnyIO
+  đã tồn tại; chưa chạy browser/UAT, AI hoặc PostgreSQL thật.
+
+## Crawler — cập nhật 2026-09-17
+
+### Phase 11a: quản lý lịch
+- Bước 5 có tạm dừng/bật lại và sửa chu kỳ hoặc giờ chạy theo múi giờ; giữ nguyên
+  source/dataset/file/cấu hình bảng và lịch sử chạy. Trạng thái/timing lưu vào DB,
+  được nạp lại sau restart. UI hiển thị trạng thái bật, timezone và lần chạy kế tiếp.
+- Validate trigger trước khi lưu, từ chối interval không dương/cron không hợp lệ;
+  tránh để lại lịch lỗi sau đăng ký thất bại. Update API chỉ cho đổi enabled/timing.
+- Job đã vào hàng chờ kiểm tra enabled trước khi crawl. Tạm dừng không ngắt lượt
+  đã bắt đầu. Mỗi lịch tối đa một instance; coalesce các lượt đến hạn cùng lúc.
+
+### Phase 11b: tạm dừng đợt crawl kéo lâu
+- UI kéo nhiều lượt/bảng chuyển sang task nền, theo dõi tiến độ mỗi 2 giây và có
+  Tạm dừng / Tiếp tục / Dừng hẳn. Tác dụng ở ranh giới giữa các lượt, sau request
+  đang xử lý; không ngắt cưỡng bức HTTP/AI hay rollback record đã lưu.
+- Tạm dừng nhả khóa bulk cho crawler khác/lịch chạy tiếp. Khi tiếp tục, refresh
+  dedup trước khi kéo trang kế tiếp, tránh ghi lặp dữ liệu được thêm trong lúc chờ.
+- Batch tối đa 20 nguồn cùng schema/đích; các nguồn dùng chung dataset mới đúng thứ tự.
+  Hai worker thread, tối đa 8 task chưa kết thúc. Điều khiển bằng mã riêng cho phiên,
+  backend chỉ giữ hash mã; task/cookie chỉ ở RAM, không ghi secret xuống DB/audit.
+- Sau 15 phút pause tự dừng để giải phóng phiên; kết quả task giữ tối đa 1 giờ hoặc
+  bị loại sớm khi đủ bộ đệm. Restart backend không replay task; record/audit đã lưu
+  còn nguyên. Vẫn yêu cầu một backend process, không có queue/checkpoint bền vững.
+- Luồng một trang, preview và retry chọn lọc hiện vẫn gọi đồng bộ; nút tạm dừng áp
+  dụng đợt nhiều lượt/bảng khởi chạy từ Chạy crawl. Không áp dụng cho Runner/UAT.
+- Kiểm chứng chung phase 11a–11b: **407 test pass** offline (17 test mới), một
+  deprecation warning Starlette/AnyIO. Kiểm tra pause/resume/cancel, quyền điều
+  khiển, queue đầy, pause timeout, restart, dedup sau pause, batch cùng dataset,
+  lịch giữ trạng thái/timing qua restart, validate/rollback và thao tác UI.
+  Chưa kiểm chứng PostgreSQL, HTTP/AI thật hoặc deployment; không đọc secret thật.
+
 ## Crawler — cập nhật 2026-09-16
+
+### Phase 10: xuất toàn bộ dataset
+- Bước 4 thêm chuẩn bị/tải CSV toàn bộ, tách khỏi CSV trang hiện tại. Có lọc theo
+  ngày crawl hoặc ngày dữ liệu `as_of`, hai đầu bao gồm, tính theo UTC. Record
+  thiếu as_of bị loại khi lọc theo ngày dữ liệu; không áp bộ lọc vào bảng đang xem.
+- API stream CSV UTF-8 BOM theo từng nhóm 500 record, không tạo file tạm. SQLite
+  và Postgres có truy vấn keyset (crawled_at, record_id) và index tương ứng; giới
+  hạn timestamp tại lúc bắt đầu xuất, tính cả record bằng mốc đó. Không phải
+  transaction snapshot; thao tác backdate hoặc clock lùi trong lúc xuất chưa được đảm bảo.
+- Metadata và cột dữ liệu có prefix riêng, tránh ghi đè khi trùng tên; CSV toàn
+  bộ theo schema dataset. Chuỗi giống công thức được xuất dạng text trong cả
+  CSV toàn bộ và CSV trang hiện tại, không sửa dữ liệu DB.
+- Audit lưu dataset, mốc xuất, bộ lọc, số record đã phát và trạng thái stream;
+  không lưu nội dung record. File chuẩn bị nằm trong phiên UI, có nút xóa;
+  đổi dataset/bộ lọc không hiển thị nhầm file cũ.
+- Backend dùng bộ nhớ theo trang; UI vẫn tải trọn file vào RAM. Dataset rất lớn
+  nên tải trực tiếp endpoint export.csv bằng HTTP client có hỗ trợ streaming.
+- Kiểm chứng: **390 test pass** offline (9 test mới), một deprecation warning
+  Starlette/AnyIO. Bao phủ trên 1000 record, timestamp trùng mốc xuất, keyset khi
+  append, lọc UTC/as_of thiếu, Unicode/CSV/formula, stream bị ngắt và UI đổi bộ lọc.
+  PostgreSQL và deploy thực tế chưa kiểm chứng; không truy cập secret thật.
 
 ### Phase 9: xem trước và chạy lại lượt lỗi
 - Bước 3 có Xem trước đợt kéo: hiển thị số lượt, cửa sổ ngày và số trang; chế độ

@@ -58,6 +58,8 @@ CREATE TABLE IF NOT EXISTS records (
     as_of TIMESTAMPTZ
 );
 
+CREATE INDEX IF NOT EXISTS idx_records_export ON records (dataset_id, crawled_at, record_id);
+
 CREATE TABLE IF NOT EXISTS extraction_strategies (
     domain TEXT NOT NULL,
     field_name TEXT NOT NULL,
@@ -296,6 +298,19 @@ class PostgresStorage(StorageEngine):
             rows = cur.fetchall()
         return [_row_to_record(row) for row in rows]
 
+    def export_record_page(self, dataset_id, cutoff, after=None, limit=500):
+        query = "SELECT * FROM records WHERE dataset_id = %s AND crawled_at <= %s"
+        args = [dataset_id, cutoff]
+        if after:
+            query += " AND (crawled_at < %s OR (crawled_at = %s AND record_id < %s))"
+            args.extend([after[0], after[0], after[1]])
+        query += " ORDER BY crawled_at DESC, record_id DESC LIMIT %s"
+        args.append(limit)
+        with self._cursor() as cur:
+            cur.execute(query, args)
+            rows = cur.fetchall()
+        return [_row_to_record(row) for row in rows]
+
     # -- extraction_strategies (cache CLAUDE.md mục 5) ----------------------
     def get_extraction_strategy(self, domain: str, field_name: str) -> Optional[ExtractionStrategy]:
         with self._cursor() as cur:
@@ -411,6 +426,14 @@ class PostgresStorage(StorageEngine):
                 "UPDATE scheduled_jobs SET last_run_at = %s, last_status = %s, "
                 "last_error_traceback = %s WHERE job_id = %s",
                 (utcnow(), status, traceback_text, job_id),
+            )
+        self._conn.commit()
+
+    def configure_scheduled_job(self, job_id, enabled, trigger_type, trigger_args):
+        with self._cursor() as cur:
+            cur.execute(
+                "UPDATE scheduled_jobs SET enabled = %s, trigger_type = %s, trigger_args = %s WHERE job_id = %s",
+                (enabled, trigger_type, psycopg2.extras.Json(trigger_args), job_id),
             )
         self._conn.commit()
 

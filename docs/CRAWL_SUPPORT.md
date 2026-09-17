@@ -10,6 +10,34 @@
    nghĩa là có lượt lỗi; các record đã lưu vẫn giữ nguyên.
 6. Bước 4 chọn số record/trang và trang dữ liệu. CSV tải xuống chứa trang đang xem.
 
+### Xuất toàn bộ dữ liệu (phase 10)
+
+Tại Bước 4, mở **Xuất toàn bộ dataset** → **Chuẩn bị CSV toàn bộ** → **Tải CSV toàn bộ**.
+File này không bị giới hạn bởi trang đang xem. Nút **Tải CSV trang hiện tại** vẫn giữ
+riêng cho nhu cầu lấy một trang.
+
+- Có thể lọc theo **Ngày crawl** hoặc **Ngày dữ liệu (as_of)**, tính theo UTC,
+  bao gồm cả ngày bắt đầu/kết thúc. Bộ lọc chỉ áp dụng file xuất, không đổi bảng UI.
+- Ngày dữ liệu được ghi từ cột ngày trong luồng kéo bảng. Khi lọc theo as_of,
+  record không có ngày dữ liệu sẽ không được xuất; không tự lấy ngày crawl thay thế.
+- CSV có UTF-8 BOM để đọc tiếng Việt; metadata đặt tên `meta.*`, cột schema đặt
+  tên `data.*`. Đối tượng/mảng được ghi dạng JSON trong một ô. Thiếu field thành ô trống.
+- Nội dung giống công thức bắt đầu bằng `=`, `+`, `-`, `@` (kể cả có khoảng trắng
+  phía trước) được thêm dấu nháy đơn để giữ dạng text trong bảng tính. Dữ liệu DB
+  không bị sửa. CSV trang hiện tại cũng bảo vệ chuỗi công thức.
+- File chuẩn bị là kết quả tại lần xuất đó, không tự cập nhật theo lịch append.
+  Bấm chuẩn bị lại để lấy dữ liệu mới; có nút xóa file khỏi bộ nhớ phiên UI.
+- Backend đọc từng nhóm 500 record theo khóa thời gian/ID, không OFFSET, và loại
+  record có `crawled_at` sau mốc bắt đầu xuất. Đây là giới hạn timestamp cho dữ
+  liệu append-only, **không phải transaction snapshot**: ghi backdate/đồng hồ lùi
+  hoặc sửa record trực tiếp trong DB giữa lúc xuất không được đảm bảo.
+- UI tải trọn file vào RAM. Với dataset rất lớn, dùng HTTP client streaming trực
+  tiếp `GET /datasets/{dataset_id}/export.csv`; tham số tùy chọn `date_basis`,
+  `start`, `end`. Không cần đăng nhập Runner. Response có `X-Export-Cutoff` và
+  `Cache-Control: no-store`; backend không ghi file tạm.
+- Audit chỉ lưu metadata/số dòng/trạng thái phát stream, không nội dung record.
+  Trạng thái complete là backend phát xong, không chứng minh người dùng đã lưu file.
+
 ### Xem trước trước khi chạy
 
 Bật chế độ nhiều lượt/bảng rồi bấm **Xem trước đợt kéo** ở Bước 3:
@@ -84,11 +112,60 @@ Nguồn cần thật sự hỗ trợ lịch sử; thay URL không tạo ra dữ 
   chạy pipeline một trang như trước.
 
 Giới hạn vận hành: một backend worker/process như cấu hình APScheduler hiện tại.
-Các đợt bulk trong process được tuần tự hóa để tránh hai lượt cùng append dòng trùng.
-Chưa có khóa phân tán cho nhiều worker, background queue, progress streaming hay checkpoint
-tiếp tục sau crash. Request chạy đồng bộ, UI chờ tối đa 600 giây. Nếu timeout, kiểm tra
-dataset trước khi chạy lại; timeout UI không chứng minh backend đã dừng. Đợt dài nên chia nhỏ.
+Các đợt bulk giữ khóa trong lúc xử lý, nhả khóa khi chờ tạm dừng để lịch và người
+dùng khác tiếp tục. Khi resume, kiểm tra lại dedup trước lượt tiếp theo.
+Chưa có khóa phân tán cho nhiều process hoặc checkpoint tiếp tục sau crash.
+UI bulk dùng queue RAM từ phase 11; endpoint `/crawl`, preview và retry chọn lọc
+vẫn đồng bộ, UI chờ tối đa 600 giây. Nếu timeout, kiểm tra dataset trước khi chạy lại;
+timeout UI không chứng minh backend đã dừng. Đợt dài nên chia nhỏ.
 Dedup DB đọc lịch sử theo từng trang; dataset lớn cần tối ưu chỉ mục/unique key trước khi scale.
+
+### Tạm dừng và thay đổi lịch (Bước 5)
+
+- **Tạm dừng lịch** ngăn lượt chạy tiếp theo, không ngắt lượt đã bắt đầu.
+- **Bật lại lịch** tính lần chạy tiếp theo từ thời điểm bật, không chạy bù toàn bộ
+  thời gian tạm dừng. Trạng thái giữ qua restart backend.
+- **Đổi thời gian chạy** thay chu kỳ hoặc giờ hàng ngày và múi giờ, không đổi
+  nguồn hay đích. Bấm **Lưu thời gian mới** mới áp dụng. Lịch đang pause vẫn pause.
+  Form này thay timing cũ; lịch cron phức tạp qua API cần gửi đầy đủ trigger_args.
+- UI hiển thị next_run_at từ scheduler, để trống nếu pause hoặc scheduler chưa chạy.
+- API: `PATCH /schedules/{job_id}` với `enabled` hoặc cặp `trigger_type/trigger_args`.
+  Các route lịch vẫn thuộc crawler chia sẻ như trước, không thêm đăng nhập Runner.
+
+Backend dùng API trigger/job của [APScheduler 3](https://apscheduler.readthedocs.io/en/3.x/modules/schedulers/base.html);
+trạng thái enabled được lưu riêng trong DB của ứng dụng để giữ qua restart.
+
+### Tạm dừng đợt đang kéo lâu (Bước 3)
+
+1. Bật **Kéo nhiều lượt / kéo bảng**, bấm **Chạy crawl**. UI gửi task nền rồi trả
+   quyền điều khiển ngay; theo dõi **Tiến độ đợt crawl**, tự cập nhật khoảng 2 giây/lần.
+2. Bấm **Tạm dừng crawl**. Trạng thái ban đầu là đang chờ tạm dừng: request đang
+   fetch/extract/ghi vẫn chạy hết. Sau đó chuyển thành **Đã tạm dừng** trước lượt kế tiếp.
+3. Bấm **Tiếp tục crawl** để kéo lượt kế tiếp. Hoặc **Dừng hẳn đợt kéo** để kết thúc;
+   giữ mọi record đã lưu, không tự chạy lại phần chưa kéo.
+
+Giới hạn cụ thể:
+
+- Không ngắt cưỡng bức một request HTTP/AI đang chờ. Dừng ở lượt cuối có thể kết thúc
+  bình thường nếu không còn lượt nào phía sau. Pause không rollback dữ liệu.
+- Tự dừng sau 15 phút ở trạng thái pause; muốn tiếp tục muộn hơn phải tạo đợt mới
+  với dataset có sẵn. File append vẫn có thể lặp record nếu chạy lại toàn đợt.
+- Đợt nền hỗ trợ tối đa 20 nguồn cùng schema/dataset/file, mỗi nguồn giữ giới hạn
+  100 lượt. Queue có 2 worker thread, tối đa 8 task chưa kết thúc; task paused vẫn
+  chiếm một worker nhưng không giữ khóa bulk. Queue đầy trả 429.
+- Cookie chỉ nằm trong RAM của đợt, hết hạn có thể khiến những lượt sau thất bại.
+  Mã điều khiển nằm trong phiên UI, backend chỉ giữ hash; không cần đăng nhập Runner.
+  Không gửi mã này vào báo lỗi. Đóng/mất phiên UI có thể mất quyền điều khiển đợt đó.
+- Backend restart làm mất queue/control; **không tự replay**. DB/audit đã ghi còn
+  nguyên. Kiểm tra dataset trước khi tạo đợt mới. UI có nút bỏ theo dõi đợt đã mất.
+- Kết quả task ở RAM tối đa 1 giờ, hoặc bị loại sớm khi bộ đệm đủ 32 task; tải/xem
+  record đã lưu vẫn qua dataset/file bình thường. Chưa có resume sau crash.
+- Crawl một trang, preview và retry chọn lọc hiện vẫn đồng bộ, chưa có nút điều
+  khiển giữa request. Cơ chế này không điều khiển Runner testcase/UAT.
+
+API nền: `POST /crawl-jobs` với `requests` là danh sách CrawlRequest; trả `id` và
+`control` một lần. Gửi `X-Crawl-Control` khi đọc `GET /crawl-jobs/{id}` hoặc
+`POST /crawl-jobs/{id}/control` với action `pause`, `resume`, `cancel`.
 
 ## 3. Cookie ở luồng người dùng
 

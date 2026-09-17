@@ -62,6 +62,16 @@ def test_selector_error_does_not_echo_selector_or_page_details():
     assert "synthetic-private" not in json.dumps(result)
 
 
+def test_structural_wait_is_inspected_without_waiting_or_executing_commands():
+    calls = []
+    def build(page, kind, selector):
+        calls.append((kind, selector))
+        return Locator()
+    result = inspect_screen(object(), workbook("wait", "", wait_selector="input:nth-of-type(1)"), 1, builder=build)
+    assert result["counts"] == {"UNIQUE_VISIBLE": 1}
+    assert calls == [("css", "input:nth-of-type(1)")]
+
+
 def test_read_method_uses_css_without_reading_result_and_flags_wait():
     calls = []
     def build(page, kind, selector):

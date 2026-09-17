@@ -8,6 +8,8 @@ from fastapi.responses import FileResponse, Response
 from pydantic import BaseModel, ConfigDict, Field
 
 from ..runner.service import RunnerError, TERMINAL, digest, safe_path
+from ..runner.preflight_contract import PreflightReport
+from ..runner.discovery import Snapshot, RepairProposal
 
 
 class StrictModel(BaseModel):
@@ -35,6 +37,7 @@ class RunCreate(StrictModel):
 
 
 class Result(StrictModel):
+    preflight: PreflightReport | None = None
     passed: int = Field(ge=0, le=100000)
     failed: int = Field(ge=0, le=100000)
     errors: int = Field(ge=0, le=100000)
@@ -45,6 +48,16 @@ class Result(StrictModel):
 class Describe(StrictModel):
     description: str = Field(min_length=10, max_length=6000)
     reviewed_no_secrets: Literal[True]
+    result_blocks: int = Field(default=1, ge=1, le=100, strict=True)
+
+
+class Discover(Describe):
+    snapshot: Snapshot
+
+
+class RepairRequest(Discover):
+    action: Literal["fill", "force_fill", "fill_enter", "select", "click", "click_if_exists", "read_result_single"]
+    read_method: Literal["", "css_input", "css_disabled"] = ""
 
 
 def create_runner_router(service, planner=None):
@@ -73,7 +86,43 @@ def create_runner_router(service, planner=None):
     @router.get("/authoring/capabilities")
     def authoring_capabilities(u=Depends(user)):
         return {"describe": planner is not None, "inspector": False, "local_inspector": True,
-                "local_repair": True, "repair": False}
+                "local_repair": True, "repair": planner is not None, "discovery": planner is not None}
+
+    def candidate_request(req, u, repairing=False):
+        if planner is None:
+            raise HTTPException(503, "Runner AI chưa được bật.")
+        from ..runner.planner import PlanError
+        from runner_agent.authoring import _workbook
+        if not planning_slots.acquire(blocking=False):
+            raise HTTPException(429, "Đang có yêu cầu tạo nháp; thử lại sau.")
+        try:
+            if repairing:
+                proposal = planner.repair(req.description, req.snapshot, req.action, req.read_method)
+                content = RepairProposal.model_validate(proposal.model_dump()).model_dump_json().encode()
+                media, filename, event = "application/json", "Repair_Proposal.json", "REPAIR_PROPOSED"
+            else:
+                plan = planner.discover(req.description, req.snapshot)
+                content = _workbook(plan.bind(req.snapshot))
+                media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+                filename, event = "Discovered_Draft.xlsx", "DISCOVERY_DRAFT_GENERATED"
+            with repo.transaction():
+                service.audit(event, u["id"])
+            return Response(content, media_type=media, headers={"Cache-Control": "no-store",
+                "Content-Disposition": f'attachment; filename="{filename}"'})
+        except PlanError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except ValueError:
+            raise HTTPException(422, "Đề xuất không khớp snapshot hoặc thao tác được hỗ trợ.") from None
+        finally:
+            planning_slots.release()
+
+    @router.post("/authoring/discover")
+    def discover(req: Discover, u=Depends(user)):
+        return candidate_request(req, u)
+
+    @router.post("/authoring/repair")
+    def repair(req: RepairRequest, u=Depends(user)):
+        return candidate_request(req, u, repairing=True)
 
     @router.post("/authoring/describe")
     def describe(req: Describe, u=Depends(user)):
@@ -85,7 +134,7 @@ def create_runner_router(service, planner=None):
             raise HTTPException(429, "Đang có yêu cầu tạo nháp; thử lại sau.")
         try:
             plan = planner.plan(validate_description(req.description))
-            content = planned_workbook(plan)
+            content = planned_workbook(plan, result_blocks=req.result_blocks)
             with repo.transaction():
                 service.audit("DRAFT_GENERATED", u["id"])
             return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -234,8 +283,12 @@ def create_runner_router(service, planner=None):
             if not r["deleted_at"]:
                 folder.mkdir(exist_ok=True)
                 import json
-                (folder / "summary.json").write_text(json.dumps({k: r[k] for k in
-                    ("run_id", "status", "passed", "failed", "errors", "unverified", "duration")}), encoding="utf-8")
+                summary = {k: r[k] for k in ("run_id", "status", "passed", "failed", "errors", "unverified", "duration")}
+                if r.get("preflight"):
+                    summary["preflight"] = r["preflight"]
+                if r.get("late_result"):
+                    summary["late_result"] = r["late_result"]
+                (folder / "summary.json").write_text(json.dumps(summary), encoding="utf-8")
         return r
 
     @router.get("/runs/{rid}/artifacts/{name}")

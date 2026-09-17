@@ -67,9 +67,17 @@ if __name__ == "__main__":
     parser.add_argument("--config", required=True)
     parser.add_argument("--row", required=True, type=int)
     parser.add_argument("--output", required=True)
+    parser.add_argument("--snapshot", help="Reviewed structural snapshot JSON")
+    parser.add_argument("--proposal", help="AI proposal JSON bound to that snapshot")
     args = parser.parse_args()
     try:
-        result = repair(args.config, args.row, args.output)
+        if bool(args.snapshot) != bool(args.proposal):
+            raise ValueError("Pass both --snapshot and --proposal, or neither")
+        if args.proposal:
+            from runner_agent.discovery import apply_proposal
+            result = apply_proposal(args.config, args.row, args.output, args.snapshot, args.proposal)
+        else:
+            result = repair(args.config, args.row, args.output)
         print("Inactive repaired draft exported." if result else "Cancelled; no workbook written.")
     except Exception as error:
         raise SystemExit(f"Repair stopped ({type(error).__name__}); no automatic retry.") from None

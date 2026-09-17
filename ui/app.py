@@ -14,11 +14,15 @@ import os
 from html import escape
 from urllib.parse import urlsplit, urlunsplit
 try:
-    from ui.crawl_controls import options_controls, run_controls, report_panel, retry_panel
+    from ui.crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls
+    from ui.crawl_jobs import submit_background, render_background
+    from ui.schedule_controls import schedule_controls
 except ModuleNotFoundError as exc:
     if exc.name != "ui":
         raise
-    from crawl_controls import options_controls, run_controls, report_panel, retry_panel
+    from crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls
+    from crawl_jobs import submit_background, render_background
+    from schedule_controls import schedule_controls
 from typing import Any, Optional
 
 import httpx
@@ -139,6 +143,18 @@ def _api_delete(path: str) -> bool:
     except httpx.HTTPError as exc:
         st.error(f"Không gọi được API ({API_BASE_URL}{path}): {exc}")
         return False
+
+
+def _api_patch(path, body):
+    try:
+        with _client() as client:
+            response = client.patch(path, json=body)
+            if response.status_code >= 400:
+                return {"_http_error": response.status_code, "detail": "Không cập nhật được lịch; kiểm tra cấu hình"}
+            return response.json()
+    except (httpx.HTTPError, ValueError):
+        st.error("Không kết nối được API để cập nhật lịch")
+        return None
 
 
 def _api_download(path: str) -> Optional[bytes]:
@@ -386,7 +402,9 @@ def _render_step3() -> None:
     st.markdown("**Field:** " + ", ".join(field_descriptions.keys()))
 
     crawl_options = options_controls(field_descriptions)
-    submitted, cookie_origin, request_cookie, preview = run_controls(st.session_state.urls, bool(crawl_options))
+    active_job = st.session_state.get("active_crawl_job")
+    busy = bool(active_job and not active_job.get("handled"))
+    submitted, cookie_origin, request_cookie, preview = run_controls(st.session_state.urls, bool(crawl_options), busy)
     if submitted or preview:
         st.session_state.crawl_ui_error = None
         st.session_state.crawl_previews = []
@@ -394,6 +412,7 @@ def _render_step3() -> None:
             st.session_state.run_log = []
             st.session_state.run_file_paths = []
         dataset_id = st.session_state.selected_dataset_id
+        pending_bodies = []
         for url in st.session_state.urls:
             body: dict[str, Any] = {
                 "url": url, "field_descriptions": field_descriptions, "image_fields": image_fields,
@@ -416,6 +435,10 @@ def _render_step3() -> None:
             st.session_state.crawl_attempts = (st.session_state.get("crawl_attempts", []) + [attempt])[-50:]
             if request_cookie and f"{parts.scheme}://{parts.netloc}" == cookie_origin:
                 body.update(cookie_header=request_cookie, cookie_origin=cookie_origin)
+            if submitted and crawl_options:
+                pending_bodies.append(dict(body))
+                body.pop("cookie_header", None)
+                continue
             try:
                 result = _api_post("/crawl/preview" if preview else "/crawl", body)
             finally:
@@ -440,6 +463,8 @@ def _render_step3() -> None:
             st.session_state.run_log.append({"url": url, **result, "_retry_config": dict(body)})
         if submitted:
             st.session_state.run_dataset_id = dataset_id
+            if pending_bodies:
+                submit_background(_api_post, pending_bodies)
 
     for item in st.session_state.get("crawl_previews", []):
         with st.expander(f"Xem trước — {item['url']}", expanded=True):
@@ -503,6 +528,11 @@ def _render_step3() -> None:
 
 # ---------------------------------------------------------------- Step 4 ----
 def _records_to_csv(records: list[dict]) -> str:
+    def text_cell(value):
+        if isinstance(value, str) and value.lstrip(" \t\r\n").startswith(("=", "+", "-", "@")):
+            return "'" + value
+        return value
+
     data_keys: list[str] = []
     for record in records:
         for key in record.get("data", {}):
@@ -512,7 +542,7 @@ def _records_to_csv(records: list[dict]) -> str:
     fieldnames = ["record_id", "source_url", "confidence", "crawled_at"] + data_keys
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fieldnames)
-    writer.writeheader()
+    writer.writerow({name: text_cell(name) for name in fieldnames})
     for record in records:
         row = {
             "record_id": record["record_id"],
@@ -521,7 +551,7 @@ def _records_to_csv(records: list[dict]) -> str:
             "crawled_at": record["crawled_at"],
             **record.get("data", {}),
         }
-        writer.writerow(row)
+        writer.writerow({name: text_cell(value) for name, value in row.items()})
     return buffer.getvalue()
 
 
@@ -544,6 +574,8 @@ def _render_step4() -> None:
             default_index = i
     label = st.selectbox("Dataset", labels, index=default_index)
     dataset_id = options[label]
+
+    export_controls(dataset_id, _api_download)
 
     page_size = st.selectbox("Số record mỗi trang", [100, 500, 1000])
     page = st.number_input("Trang dữ liệu", min_value=1, value=1, key=f"records_page_{dataset_id}")
@@ -570,7 +602,7 @@ def _render_step4() -> None:
         ]
         st.dataframe(table_rows, use_container_width=True)
         st.download_button(
-            "⬇ Tải CSV",
+            "⬇ Tải CSV trang hiện tại",
             data=_records_to_csv(records),
             file_name=f"{dataset_id}.csv",
             mime="text/csv",
@@ -666,6 +698,7 @@ def _render_step5() -> None:
             if c2.button("🗑", key=f"del_job_{job['job_id']}"):
                 if _api_delete(f"/schedules/{job['job_id']}"):
                     st.rerun()
+            schedule_controls(job, _api_patch)
             st.divider()
 
     st.markdown("**Tạo lịch mới**")
@@ -840,4 +873,5 @@ except Exception as exc:
     allowed = {"TypeError", "ValueError", "KeyError", "IndexError", "AttributeError", "HTTPError", "RuntimeError"}
     st.session_state.crawl_ui_error = {"error_type": kind if kind in allowed else "Other", "frames": frames[-12:]}
     st.error("Không hiển thị được bước này. Bạn vẫn có thể báo lỗi cho admin bên dưới.")
+render_background(_client)
 report_panel(_api_post)
