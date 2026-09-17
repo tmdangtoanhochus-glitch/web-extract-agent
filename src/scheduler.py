@@ -68,6 +68,7 @@ class CrawlScheduler:
         write_mode: Optional[str] = None,
         key_field: Optional[str] = None,
         image_fields: Optional[list[str]] = None,
+        crawl_options: Optional[dict] = None,
     ) -> ScheduledJob:
         """Tạo job mới: lưu vào storage TRƯỚC (không mất job nếu crash ngay
         sau khi đăng ký với APScheduler), rồi đăng ký chạy thật. `dataset_id`
@@ -83,6 +84,7 @@ class CrawlScheduler:
             write_mode=write_mode,
             key_field=key_field,
             image_fields=image_fields,
+            crawl_options=crawl_options,
         )
         self._register_job(job)
         return job
@@ -115,7 +117,16 @@ class CrawlScheduler:
 
         traceback_text: Optional[str] = None
         try:
-            if job.storage_mode == "file":
+            if job.crawl_options:
+                from .bulk_crawl import CrawlOptions, run_bulk
+                outcome = run_bulk(url=job.url, field_descriptions=job.field_descriptions,
+                    options=CrawlOptions.model_validate(job.crawl_options), fetcher=self._fetcher,
+                    ai_client=self._ai_client, storage=self._storage, dataset_id=job.dataset_id,
+                    storage_mode=job.storage_mode, file_path=job.file_path, write_mode=job.write_mode or "append",
+                    image_fields=job.image_fields, confidence_threshold=self._confidence_threshold)
+                status = outcome["status"]
+                self._storage.add_audit_log("bulk_schedule_run", job_id=job_id, detail=outcome)
+            elif job.storage_mode == "file":
                 file_result = run_file_crawl_job(
                     url=job.url,
                     field_descriptions=job.field_descriptions,

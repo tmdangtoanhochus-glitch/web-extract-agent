@@ -9,6 +9,7 @@ import streamlit as st
 API = os.environ.get("API_BASE_URL", "http://localhost:8000").rstrip("/")
 st.set_page_config(page_title="Local Runner", page_icon="▶", layout="wide")
 st.title("Local Runner")
+st.caption("Đăng nhập chỉ dành cho Runner. Chức năng crawl ở trang chính dùng được không cần đăng nhập Runner.")
 
 
 def api(method, path, body=None, binary=False):
@@ -56,19 +57,19 @@ if st.sidebar.button("Đăng xuất Runner"):
     st.rerun()
 
 tabs = st.tabs(["Chạy testcase", "Lịch sử & kết quả", "Agent", "Thông báo"] +
-               (["Quản trị"] if me["role"] == "admin" else []) + ["Describe", "Record local"])
+               (["Quản trị"] if me["role"] == "admin" else []) + ["Describe", "Record local", "Inspector local"])
 
-with tabs[-2]:
+with tabs[-3]:
     st.subheader("Mô tả flow để tạo workbook nháp")
     capabilities = api("GET", "/authoring/capabilities") or {}
     if not isinstance(capabilities, dict) or not capabilities.get("describe"):
         st.info("Describe AI chưa được bật trên backend (RUNNER_AI_ENABLED).")
     else:
-        st.caption("AI tạo đủ sheet settings, steps và testcases, gồm các cột dữ liệu/expected theo flow. Website chưa được inspect. "
+        st.caption("AI chỉ tạo sheet steps và cột mẫu testcases; bạn tự nhập mọi testcase. Không sinh hoặc tự đổi settings. Website chưa được inspect. "
                    "Không nhập URL nội bộ, dữ liệu khách hàng hay credential; chỉ dùng role/placeholder.")
         with st.form("runner_describe", clear_on_submit=True):
             description = st.text_area("Mô tả testcase", max_chars=6000,
-                                       placeholder="Role RM đăng nhập, tìm khách hàng rồi kiểm tra kết quả. Tạo 2 testcase: tìm thấy và không tìm thấy. Dữ liệu dùng placeholder local.")
+                                       placeholder="Đăng nhập bằng account, tìm theo CIF rồi đọc số tiền để kiểm tra. Chỉ tạo step và cột input/expected; tôi tự nhập testcase.")
             reviewed = st.checkbox("Tôi đã kiểm tra mô tả không chứa secret hoặc dữ liệu nhạy cảm và đồng ý gửi cho AI.")
             generate = st.form_submit_button("Tạo workbook nháp")
         if generate:
@@ -85,22 +86,47 @@ with tabs[-2]:
         if st.session_state.get("runner_describe_draft"):
             st.download_button("Tải workbook nháp", st.session_state.runner_describe_draft,
                                "Describe_Draft.xlsx", "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-            st.info("Nháp chưa hoạt động (active=N). Bổ sung URL, thay locator :not(*), ánh xạ biến local "
-                    "và rà soát assertion trước khi kích hoạt. Workbook có đủ cột step, cấu hình và các testcase; sheet review chỉ ra phần cần bổ sung.")
+            st.info("Step chưa hoạt động (active=N); sheet testcases chỉ có header. Dùng prepare_runner.py ghép với config hiện có, "
+                    "sau đó tự nhập testcase và rà soát locator. Settings chỉ đổi khi bạn duyệt từng đề xuất có giải thích.")
             if st.button("Xóa bản nháp khỏi phiên"):
                 st.session_state.pop("runner_describe_draft", None)
                 st.rerun()
 
-with tabs[-1]:
+with tabs[-2]:
     st.subheader("Ghi thao tác trên máy của bạn")
     st.write("Mở terminal tại project trên máy truy cập được website và chạy:")
     st.code("python record_runner.py --output config/Recorded_Draft.xlsx", language="bash")
     st.write("Trong browser mới, tự mở website và thao tác. Đóng các tab để xuất workbook nháp.")
     st.caption("Recorder ghi click, fill và select chuẩn bằng vị trí phần tử; không ghi giá trị input, nội dung trang hoặc URL.")
-    st.write("Mở workbook để đặt URL, kiểm tra locator, ánh xạ placeholder tới biến môi trường local và thêm assertion. "
-             "Các step và testcase mặc định active=N. Sau khi rà soát, bật những dòng cần chạy rồi chọn file tại tab Chạy testcase.")
+    st.write("Workbook ghi step inactive và header testcases, không sinh testcase/settings. Ghép vào config hiện có bằng lệnh bên dưới, "
+             "tự nhập testcase và rà soát trước khi bật các dòng cần chạy.")
     st.info("Iframe, shadow DOM, upload, checkbox/radio và dropdown tùy biến cần cấu hình thủ công. "
             "Locator theo vị trí có thể đổi khi giao diện thay đổi. Xem tab Describe để tạo nháp bằng AI; sửa locator tự động chưa có.")
+    st.subheader("Ghép step vào config trên máy local")
+    st.code("python prepare_runner.py --template config/Existing.xlsx --draft config/Recorded_Draft.xlsx --output config/Prepared.xlsx", language="bash")
+    st.caption("Áp dụng cho cả nháp Describe và Record. Giữ nguyên settings và testcase bạn đã nhập; chỉ bổ sung header còn thiếu. "
+               "Nếu hàm Runner cần đổi screen_flow/login_screen/result_screen, terminal giải thích và hỏi từng mục; mặc định giữ nguyên.")
+    st.code("python preflight_runner.py --config config/Prepared.xlsx", language="bash")
+    st.caption("Sau khi tự nhập testcase: kiểm tra cấu trúc, dòng active và locator nháp, không mở browser hay đọc secret. "
+               "Kết quả này chưa xác minh credential, website hoặc nghiệp vụ.")
+
+with tabs[-1]:
+    st.subheader("Kiểm tra locator trên máy local")
+    st.code("python inspect_runner.py --config config/Describe_Draft.xlsx --output inspection.json", language="bash")
+    st.write("Tự mở website và đăng nhập trong browser mới. Tại terminal, chọn số màn hình trong workbook "
+             "và số tab browser, ví dụ 1 1. Chuyển màn hình thủ công rồi kiểm tra tiếp; nhập q để lưu báo cáo và đóng browser.")
+    st.write("Inspector kiểm tra cả step inactive, dùng locator đã có trong workbook. Báo cáo chỉ có số dòng, "
+             "số phần tử khớp và trạng thái; không chứa DOM, URL, locator hay giá trị input.")
+    st.info("UNIQUE_VISIBLE chỉ xác nhận một phần tử đang hiển thị, chưa chứng minh đúng mục tiêu hoặc testcase pass. "
+            "Locator placeholder, wait, dropdown tùy biến và cách đọc kết quả phức tạp cần rà soát thủ công.")
+    st.caption("Không tự sửa workbook, chạy thao tác nghiệp vụ hoặc gửi báo cáo lên server. "
+               "Sau khi sửa locator, chạy lại Inspector; AI repair chưa triển khai.")
+    st.subheader("Chọn phần tử để sửa locator")
+    st.code("python repair_runner.py --config config/Describe_Draft.xlsx --row 2 --output config/Repaired_Draft.xlsx", language="bash")
+    st.write("Dùng số dòng Excel trong báo cáo Inspector (dòng header là 1). Trong browser mới, tự mở đúng màn hình, "
+             "rê chuột lên phần tử thay thế và nhấn Ctrl+Alt+L. Xem CSS đề xuất ở terminal; nhập EXPORT để xuất bản sao hoặc q để hủy.")
+    st.caption("Chỉ đổi locator_type/locator của dòng chọn, giữ các sheet và dữ liệu, đặt toàn bộ step/testcase trong bản sao về active=N. "
+               "File gốc không đổi. Công cụ kiểm tra lại phần tử và hash workbook trước khi xuất; không gọi AI hay gửi DOM/input lên server.")
 
 with tabs[0]:
     st.info("Runner chạy trên máy của bạn. Chỉ dùng testcase có dữ liệu giả hoặc placeholder; credential UAT được resolve local.")

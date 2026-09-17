@@ -28,14 +28,15 @@ def test_draft_is_inactive_and_has_local_references_only():
     for action in ("fill", "click", "select"):
         assert recording.accept({"action": action, "locator": "html:nth-of-type(1) > body:nth-of-type(1)"})
     content = draft_workbook(recording)
-    validate_workbook(content)
+    validate_workbook(content, require_settings=False)
+    with pytest.raises(ValueError, match="Missing sheets"):
+        validate_workbook(content)
     wb = load_workbook(io.BytesIO(content))
     steps = list(wb["steps"].values)
     assert all(row[6] == "N" for row in steps[1:])
-    case = list(wb["testcases"].values)[1]
-    assert case[2] == "N"
-    assert case[5:] == ("${REC_FIELD_0001}", "${REC_FIELD_0003}")
-    assert dict(list(wb["settings"].values)[1:])["url"] == "https://example.invalid"
+    assert wb["testcases"].max_row == 1
+    assert list(wb["testcases"].values)[0][5:] == ("field_0001", "field_0003")
+    assert "settings" not in wb.sheetnames
     wb.close()
 
 

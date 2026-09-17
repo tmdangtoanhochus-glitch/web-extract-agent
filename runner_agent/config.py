@@ -5,7 +5,7 @@ import zipfile
 from openpyxl import load_workbook
 
 
-def validate_workbook(content):
+def validate_workbook(content, require_settings=True):
     if len(content) > 10 * 1024 * 1024:
         raise ValueError("Workbook too large")
     with zipfile.ZipFile(io.BytesIO(content)) as archive:
@@ -15,7 +15,8 @@ def validate_workbook(content):
             raise ValueError("External links/macros not accepted")
     wb = load_workbook(io.BytesIO(content), read_only=True, data_only=False, keep_links=False)
     try:
-        if not {"settings", "steps", "testcases"}.issubset(wb.sheetnames):
+        required = {"steps", "testcases"} | ({"settings"} if require_settings else set())
+        if not required.issubset(wb.sheetnames):
             raise ValueError("Missing sheets")
         for sheet in wb:
             rows = sheet.iter_rows()

@@ -77,6 +77,7 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     write_mode TEXT,
     key_field TEXT,
     image_fields JSONB,
+    crawl_options JSONB,
     trigger_type TEXT NOT NULL,
     trigger_args JSONB NOT NULL,
     enabled BOOLEAN NOT NULL DEFAULT TRUE,
@@ -119,6 +120,7 @@ class PostgresStorage(StorageEngine):
         self._conn = psycopg2.connect(dsn)
         with self._conn.cursor() as cur:
             cur.execute(_SCHEMA_SQL)
+            cur.execute("ALTER TABLE scheduled_jobs ADD COLUMN IF NOT EXISTS crawl_options JSONB")
         self._conn.commit()
 
     def close(self) -> None:
@@ -339,6 +341,7 @@ class PostgresStorage(StorageEngine):
         write_mode: Optional[str] = None,
         key_field: Optional[str] = None,
         image_fields: Optional[list[str]] = None,
+        crawl_options: Optional[dict] = None,
     ) -> ScheduledJob:
         job_id = uuid.uuid4().hex
         created_at = utcnow()
@@ -346,10 +349,10 @@ class PostgresStorage(StorageEngine):
         with self._cursor() as cur:
             cur.execute(
                 "INSERT INTO scheduled_jobs (job_id, dataset_id, url, field_descriptions, "
-                "storage_mode, file_path, write_mode, key_field, image_fields, "
+                "storage_mode, file_path, write_mode, key_field, image_fields, crawl_options, "
                 "trigger_type, trigger_args, enabled, created_at, last_run_at, last_status, "
                 "last_error_traceback) "
-                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, NULL, NULL, NULL)",
+                "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE, %s, NULL, NULL, NULL)",
                 (
                     job_id,
                     dataset_id,
@@ -360,6 +363,7 @@ class PostgresStorage(StorageEngine):
                     write_mode,
                     key_field,
                     psycopg2.extras.Json(image_fields),
+                    psycopg2.extras.Json(crawl_options) if crawl_options else None,
                     trigger_type,
                     psycopg2.extras.Json(trigger_args),
                     created_at,
@@ -376,6 +380,7 @@ class PostgresStorage(StorageEngine):
             write_mode=write_mode,
             key_field=key_field,
             image_fields=image_fields,
+            crawl_options=crawl_options,
             trigger_type=trigger_type,
             trigger_args=trigger_args,
             enabled=True,
@@ -539,6 +544,7 @@ def _row_to_scheduled_job(row: dict) -> ScheduledJob:
         write_mode=row["write_mode"],
         key_field=row["key_field"],
         image_fields=list(row["image_fields"]) if row["image_fields"] else [],
+        crawl_options=row["crawl_options"],
         trigger_type=row["trigger_type"],
         trigger_args=dict(row["trigger_args"]),
         enabled=bool(row["enabled"]),

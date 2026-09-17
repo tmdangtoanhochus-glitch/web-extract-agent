@@ -81,6 +81,7 @@ class ScheduledJob:
     write_mode: Optional[str] = None
     key_field: Optional[str] = None
     image_fields: list[str] = field(default_factory=list)
+    crawl_options: Optional[dict] = None
     last_run_at: Optional[datetime] = None
     last_status: Optional[str] = None
     last_error_traceback: Optional[str] = None
@@ -231,6 +232,7 @@ class StorageEngine(ABC):
         write_mode: Optional[str] = None,
         key_field: Optional[str] = None,
         image_fields: Optional[list[str]] = None,
+        crawl_options: Optional[dict] = None,
     ) -> ScheduledJob:
         """`dataset_id` chỉ bắt buộc khi `storage_mode="db"` — `None` cho job
         `storage_mode="file"` (không tạo dataset cho luồng file). `image_fields`:

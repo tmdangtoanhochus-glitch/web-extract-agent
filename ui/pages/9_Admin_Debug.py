@@ -105,7 +105,7 @@ def _api_delete(path: str) -> Optional[dict]:
         return None
 
 
-tab_errors, tab_credentials = st.tabs(["❌ Job lỗi & gợi ý sửa", "🔑 Cookie đăng nhập theo domain"])
+tab_errors, tab_credentials, tab_reports = st.tabs(["❌ Job lỗi & gợi ý sửa", "🔑 Cookie cũ", "Báo lỗi từ người dùng"])
 
 with tab_errors:
     if st.button("🔄 Tải lại danh sách lỗi"):
@@ -138,6 +138,8 @@ with tab_errors:
                 )
                 st.markdown("**Traceback đầy đủ:**")
                 st.code(job.get("last_error_traceback") or "(không có traceback lưu lại)", language="text")
+                if job.get("bulk_results"):
+                    st.dataframe(job["bulk_results"])
 
                 suggestion_key = f"suggestion_{job['job_id']}"
                 if st.button("🤖 Hỏi AI gợi ý sửa", key=f"ask_{job['job_id']}"):
@@ -168,31 +170,7 @@ with tab_errors:
             )
 
 with tab_credentials:
-    st.caption(
-        "Dán cookie/session ĐÃ ĐĂNG NHẬP SẴN (tự đăng nhập bằng trình duyệt thật rồi copy) cho domain cần "
-        "đăng nhập mới crawl được — hệ thống chỉ gắn header Cookie vào request, KHÔNG tự động đăng nhập/điền "
-        "form. Cookie hết hạn thì tự cập nhật lại thủ công."
-    )
-
-    with st.form("add_credential"):
-        domain = st.text_input("Domain (vd. batdongsan.com.vn — không có https://)")
-        cookie_header = st.text_area("Cookie header (copy từ DevTools → Network → request header 'Cookie')")
-        submitted = st.form_submit_button("💾 Lưu")
-    if submitted:
-        if not domain.strip() or not cookie_header.strip():
-            st.warning("Cần nhập cả domain và cookie.")
-        else:
-            result = _api_post(
-                "/admin/site-credentials",
-                json_body={"domain": domain.strip(), "cookie_header": cookie_header.strip()},
-            )
-            if result and result.get("_http_error"):
-                st.error(f"Lưu thất bại: {result['detail']}")
-            elif result:
-                st.success(f"Đã lưu cookie cho domain '{result['domain']}'.")
-                st.rerun()
-
-    st.markdown("**Danh sách domain đã lưu cookie:**")
+    st.info("Nhập cookie đã chuyển sang Bước 3 của luồng crawl. Cookie cũ dưới đây không còn được crawler hoặc lịch dùng tự động. Bạn có thể xóa các mục cũ.")
     credentials = _api_get("/admin/site-credentials")
     if credentials:
         for cred in credentials:
@@ -205,3 +183,18 @@ with tab_credentials:
                     st.rerun()
     else:
         st.info("Chưa lưu cookie cho domain nào.")
+
+with tab_reports:
+    reports = _api_get("/admin/crawl-reports") or []
+    st.caption("Báo lỗi crawl/UI từ người dùng. AI chỉ nhận metadata đã giới hạn, không nhận cookie hay nội dung trang.")
+    for report in reports:
+        with st.expander(f"Report {report['id']} - {report['occurred_at']}"):
+            st.json(report["detail"])
+            for diagnosis in report.get("diagnoses", []):
+                st.code(diagnosis["detail"].get("content", ""), language="text")
+            if st.button("AI chẩn đoán", key=f"diagnose_{report['id']}"):
+                result = _api_post(f"/admin/crawl-reports/{report['id']}/diagnose")
+                if result and not result.get("_http_error"):
+                    st.code(result["content"], language="text")
+                else:
+                    st.error("Chưa chẩn đoán được; báo lỗi vẫn được lưu.")

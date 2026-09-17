@@ -11,6 +11,14 @@ from __future__ import annotations
 import csv
 import io
 import os
+from html import escape
+from urllib.parse import urlsplit, urlunsplit
+try:
+    from ui.crawl_controls import options_controls, run_controls, report_panel, retry_panel
+except ModuleNotFoundError as exc:
+    if exc.name != "ui":
+        raise
+    from crawl_controls import options_controls, run_controls, report_panel, retry_panel
 from typing import Any, Optional
 
 import httpx
@@ -85,7 +93,7 @@ _init_state()
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(base_url=API_BASE_URL, timeout=60.0)
+    return httpx.Client(base_url=API_BASE_URL, timeout=600.0)
 
 
 def _api_get(path: str) -> Optional[Any]:
@@ -103,13 +111,20 @@ def _api_post(path: str, json_body: dict) -> Optional[dict]:
     try:
         with _client() as client:
             resp = client.post(path, json=json_body)
+            request_id = resp.headers.get("X-Crawl-Request-ID")
+            if path in {"/crawl", "/crawl/preview"} and st.session_state.get("crawl_attempts"):
+                st.session_state.crawl_attempts[-1]["request_id"] = request_id
+            try:
+                result = resp.json()
+            except ValueError:
+                result = {"detail": "API returned an unreadable response"}
             if resp.status_code >= 400:
-                detail = resp.json().get("detail", resp.text)
-                return {"_http_error": resp.status_code, "detail": detail}
-            return resp.json()
-    except httpx.HTTPError as exc:
-        st.error(f"Không gọi được API ({API_BASE_URL}{path}): {exc}")
+                return {"_http_error": resp.status_code, "detail": result.get("detail"), "request_id": request_id}
+            return result
+    except httpx.HTTPError:
+        st.error("Không kết nối được API. Bạn có thể báo lượt kéo này bên dưới; nếu đã gửi request, hãy kiểm tra dữ liệu trước khi chạy lại.")
         return None
+
 
 
 def _api_delete(path: str) -> bool:
@@ -344,6 +359,8 @@ def _render_step2() -> None:
 
 # ---------------------------------------------------------------- Step 3 ----
 _STATUS_CSS_CLASS = {
+    "completed": "mp-status-saved",
+    "partial": "mp-status-warn",
     "saved": "mp-status-saved",
     "unchanged": "mp-status-unchanged",
     "schema_mismatch": "mp-status-warn",
@@ -368,9 +385,14 @@ def _render_step3() -> None:
     st.markdown("**URL:** " + ", ".join(st.session_state.urls))
     st.markdown("**Field:** " + ", ".join(field_descriptions.keys()))
 
-    if st.button("🚀 Chạy crawl", type="primary"):
-        st.session_state.run_log = []
-        st.session_state.run_file_paths = []
+    crawl_options = options_controls(field_descriptions)
+    submitted, cookie_origin, request_cookie, preview = run_controls(st.session_state.urls, bool(crawl_options))
+    if submitted or preview:
+        st.session_state.crawl_ui_error = None
+        st.session_state.crawl_previews = []
+        if submitted:
+            st.session_state.run_log = []
+            st.session_state.run_file_paths = []
         dataset_id = st.session_state.selected_dataset_id
         for url in st.session_state.urls:
             body: dict[str, Any] = {
@@ -386,7 +408,25 @@ def _render_step3() -> None:
                 body["dataset_id"] = dataset_id
             else:
                 body["dataset_name"] = st.session_state.dataset_name
-            result = _api_post("/crawl", body)
+            if crawl_options:
+                body["crawl_options"] = crawl_options
+            parts = urlsplit(url)
+            attempt = {"url": urlunsplit((parts.scheme, parts.hostname or "", parts.path, "", "")),
+                       "fields": list(field_descriptions), "storage_mode": "file" if is_file_mode else "db"}
+            st.session_state.crawl_attempts = (st.session_state.get("crawl_attempts", []) + [attempt])[-50:]
+            if request_cookie and f"{parts.scheme}://{parts.netloc}" == cookie_origin:
+                body.update(cookie_header=request_cookie, cookie_origin=cookie_origin)
+            try:
+                result = _api_post("/crawl/preview" if preview else "/crawl", body)
+            finally:
+                body.pop("cookie_header", None)
+            if preview:
+                if result:
+                    st.session_state.crawl_previews.append({"url": url, **result})
+                continue
+            if result and not result.get("_http_error"):
+                st.session_state.last_crawl_config = {**body, "dataset_id": result.get("dataset_id")}
+
             if result is None:
                 continue
             if result.get("_http_error"):
@@ -397,8 +437,23 @@ def _render_step3() -> None:
             if is_file_mode and result.get("file_path"):
                 if result["file_path"] not in st.session_state.run_file_paths:
                     st.session_state.run_file_paths.append(result["file_path"])
-            st.session_state.run_log.append({"url": url, **result})
-        st.session_state.run_dataset_id = dataset_id
+            st.session_state.run_log.append({"url": url, **result, "_retry_config": dict(body)})
+        if submitted:
+            st.session_state.run_dataset_id = dataset_id
+
+    for item in st.session_state.get("crawl_previews", []):
+        with st.expander(f"Xem trước — {item['url']}", expanded=True):
+            st.caption("Kết quả lần xem trước gần nhất. Nếu đổi cấu hình, hãy xem trước lại; các trang còn lại chưa được kiểm tra.")
+            if item.get("_http_error"):
+                st.error(item.get("detail"))
+            else:
+                st.write(f"Kế hoạch {item['requests']} lượt; đã tải {item['fetched_pages']} trang để xem trước.")
+                st.dataframe(item["plan"])
+                if item.get("sample"):
+                    st.dataframe(item["sample"])
+                    st.caption(f"Hiển thị tối đa 10 dòng mẫu trong {item['matched_rows']} dòng khớp của trang đầu. Chưa lưu vào dataset/file.")
+                elif item.get("fetched_pages"):
+                    st.info("Trang đầu không có dòng khớp khoảng ngày; kiểm tra cột ngày và bộ lọc nguồn.")
 
     if st.session_state.run_log:
         st.markdown("**Console log**")
@@ -407,14 +462,17 @@ def _render_step3() -> None:
             css_class = _STATUS_CSS_CLASS.get(status, "mp-status-error")
             detail = entry.get("detail") or ""
             confidence = entry.get("confidence")
-            conf_text = f" · confidence={confidence:.2f}" if confidence is not None else ""
+            conf_text = f" · confidence={confidence:.2f}" if isinstance(confidence, (int, float)) else ""
             review_text = (
                 ' · <span class="mp-status-warn">⚠ cần xem lại</span>' if entry.get("needs_review") else ""
             )
             st.markdown(
-                f'<span class="{css_class}">● {status}</span> — {entry["url"]}{conf_text}{review_text} {detail}',
+                f'<span class="{css_class}">● {status}</span> — {escape(str(entry["url"]))}{conf_text}{review_text} {escape(str(detail))}',
                 unsafe_allow_html=True,
             )
+            if "requests" in entry:
+                st.write({key: entry.get(key) for key in ("requests", "saved", "skipped", "failed")})
+                st.dataframe(entry.get("results", []))
             if entry.get("data"):
                 with st.expander(f"Dữ liệu trích xuất — {entry['url']}"):
                     st.json(entry["data"])
@@ -429,6 +487,8 @@ def _render_step3() -> None:
                     f"⬇ Tải {file_path}", data=content, file_name=file_path.split("/")[-1],
                     mime="application/json", key=f"dl_{file_path}",
                 )
+
+    retry_panel(_api_post)
 
     b1, b2 = st.columns([1, 1])
     if b1.button("← Quay lại"):
@@ -485,9 +545,12 @@ def _render_step4() -> None:
     label = st.selectbox("Dataset", labels, index=default_index)
     dataset_id = options[label]
 
-    records = _api_get(f"/datasets/{dataset_id}/records") or []
+    page_size = st.selectbox("Số record mỗi trang", [100, 500, 1000])
+    page = st.number_input("Trang dữ liệu", min_value=1, value=1, key=f"records_page_{dataset_id}")
+    records = _api_get(f"/datasets/{dataset_id}/records?limit={page_size}&offset={(page - 1) * page_size}") or []
+    st.caption("Bảng và CSV bên dưới chỉ gồm trang đang chọn. Tăng số record hoặc chuyển trang để xem tiếp.")
     if not records:
-        st.info("Dataset chưa có record nào — chạy crawl ở Bước 3 trước.")
+        st.info("Trang này chưa có record. Chọn trang trước hoặc chạy crawl để bổ sung dữ liệu.")
     else:
         needs_review_count = sum(1 for r in records if r.get("needs_review"))
         if needs_review_count:
@@ -551,6 +614,31 @@ def _render_step5() -> None:
         "Cấu hình crawl lặp lại theo lịch — chạy nền ở backend (APScheduler), "
         "tiếp tục chạy đúng lịch kể cả khi đóng UI này."
     )
+
+    previous = st.session_state.get("last_crawl_config")
+    if previous and previous.get("crawl_options"):
+        with st.expander("Đặt lịch append từ đợt vừa kéo", expanded=True):
+            st.caption("Dùng lại nguồn, ánh xạ cột và dataset của đợt vừa kéo. Khoảng ngày gần nhất tính theo UTC. "
+                       "Lịch không giữ cookie của lượt kéo thủ công. Nếu nguồn bắt buộc đăng nhập, lịch này chưa hỗ trợ.")
+            st.write({key: previous.get(key) for key in ("url", "dataset_id", "file_path")})
+            lookback = st.number_input("Số ngày gần nhất mỗi lần chạy lịch", min_value=1, max_value=366, value=7)
+            every = st.number_input("Chạy mỗi bao nhiêu giờ", min_value=1, max_value=720, value=24)
+            if st.button("Tạo lịch append theo cấu hình này"):
+                options = dict(previous["crawl_options"])
+                had_dates = bool(options.pop("start_date", None))
+                options.pop("end_date", None)
+                if had_dates:
+                    options["lookback_days"] = lookback
+                body = {key: value for key, value in previous.items()
+                        if key not in {"cookie_header", "cookie_origin", "dataset_name"}}
+                body.update(crawl_options=options, trigger_type="interval", trigger_args={"hours": every})
+                if body.get("storage_mode") == "file":
+                    body["write_mode"] = "append"
+                result = _api_post("/schedules", body)
+                if result and not result.get("_http_error"):
+                    st.success("Đã tạo lịch append")
+                else:
+                    st.error("Chưa tạo được lịch; kiểm tra lại cấu hình đợt vừa kéo")
 
     datasets = _list_datasets()
     dataset_by_id = {d["dataset_id"]: d for d in datasets}
@@ -739,4 +827,17 @@ _RENDERERS = {
     4: _render_step4,
     5: _render_step5,
 }
-_RENDERERS[st.session_state.step]()
+try:
+    _RENDERERS[st.session_state.step]()
+except Exception as exc:
+    frames = []
+    tb = exc.__traceback__
+    while tb:
+        if tb.tb_frame.f_code.co_filename.replace("\\", "/").endswith("ui/app.py"):
+            frames.append({"file": "ui/app.py", "line": tb.tb_lineno})
+        tb = tb.tb_next
+    kind = type(exc).__name__
+    allowed = {"TypeError", "ValueError", "KeyError", "IndexError", "AttributeError", "HTTPError", "RuntimeError"}
+    st.session_state.crawl_ui_error = {"error_type": kind if kind in allowed else "Other", "frames": frames[-12:]}
+    st.error("Không hiển thị được bước này. Bạn vẫn có thể báo lỗi cho admin bên dưới.")
+report_panel(_api_post)

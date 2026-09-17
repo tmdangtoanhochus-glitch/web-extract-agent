@@ -1,5 +1,107 @@
 # Changelog
 
+## Crawler — cập nhật 2026-09-16
+
+### Phase 9: xem trước và chạy lại lượt lỗi
+- Bước 3 có Xem trước đợt kéo: hiển thị số lượt, cửa sổ ngày và số trang; chế độ
+  bảng tải đúng trang đầu và hiển thị tối đa 10 dòng mẫu. Không tạo dataset/record,
+  không ghi file/cache trích xuất, không gọi AI. Audit chỉ metadata, không lưu mẫu.
+- Thêm chạy lại riêng lượt lỗi cho bảng DB, giữ nguyên dataset và số thứ tự trong
+  kế hoạch gốc. Backend so fingerprint cấu hình, dataset và kết quả audit trước khi
+  chọn lượt; đổi cấu hình bị từ chối. Giữ dedup khi một lượt đã lưu được một phần.
+- Retry do người dùng chủ động, không tự động; không áp dụng file append, chế độ
+  fields, lịch có khoảng ngày di động hoặc đợt chưa có kết quả xác định. Cookie cần
+  nhập lại, không lưu trong snapshot cấu hình. UI giữ lịch sử retry trong phiên hiện tại.
+- Lỗi bảng có mã và hướng dẫn riêng cho selector, ô gộp, số cột, ngày và giới hạn
+  dòng; lỗi tải/lưu không phản chiếu nội dung trang hay exception message thô.
+- Admin thấy lịch lỗi một phần và kết quả từng lượt; chẩn đoán AI của lịch bulk
+  dùng metadata, không đọc source/DOM. Sửa báo lỗi UI khi trạng thái exception là None.
+- Kiểm chứng: **381 test pass** offline, gồm 10 test mới cho preview/retry/API/UI và
+  lỗi lịch một phần. Còn một deprecation warning Starlette/AnyIO. Chưa gọi website,
+  AI hay PostgreSQL thật; không sửa CLAUDE.md, settings Runner hoặc dữ liệu testcase.
+
+### Phase 8a: cookie theo lượt và báo lỗi từ người dùng
+- Chuyển nhập cookie sang Bước 3, kèm hướng dẫn Chrome Network. Form xóa sau submit;
+  cookie chỉ dùng trong bộ nhớ cho đúng origin, không lưu vào DB/lịch/audit và chặn
+  redirect khác origin. Fetcher mặc định ngừng dùng kho cookie chung của admin;
+  admin vẫn xem metadata/xóa mục cũ. Lịch nguồn cần cookie chưa hỗ trợ cơ chế phiên mới.
+- Mỗi lần crawl có request ID và audit metadata. Người dùng gửi báo lỗi không cần
+  đăng nhập Runner; hộp báo lỗi nằm ngoài renderer để vẫn dùng khi gặp TypeError.
+- Admin có hộp báo cáo, có thể yêu cầu AI chẩn đoán metadata và lưu kết quả. Không
+  gửi raw HTML/cookie/giá trị record/exception message; không tự sửa code hay gửi email.
+- Lỗi validation không phản chiếu input. Đọc code cho debug chỉ cho phép file Python
+  trong repo, loại đường dẫn secrets/credential.
+
+### Phase 8b: kéo nhiều lượt, lịch sử, bảng và lịch append
+- Thêm `CrawlOptions` và pipeline bulk riêng, giữ pipeline một trang hiện tại.
+  Hỗ trợ URL `{start}/{end}/{page}`, khoảng ngày bao gồm hai đầu, chia cửa sổ và
+  phân trang số; giới hạn 100 lượt/đợt. Kết quả ghi số lưu/bỏ qua/lỗi từng lượt.
+- Bảng HTML: selector đúng một bảng, field ánh xạ cột từ 1, tùy chọn cột ngày/format;
+  mỗi dòng là một record. Bỏ qua dòng trùng toàn bộ dữ liệu trong cùng dataset,
+  kiểm tra hết lịch sử theo trang; thay đổi dữ liệu append bản mới. Ghi source và as_of.
+- File bulk dùng append, giữ hành vi không dedup của luồng file. Bảng có ô gộp,
+  bảng JS-only và tải ảnh trong ô chưa hỗ trợ; không âm thầm coi như thành công.
+- Bước 5 dùng lại cấu hình đợt vừa kéo để đặt lịch, thay khoảng cố định bằng N ngày
+  gần nhất (UTC). Cấu hình được lưu/nạp lại qua SQLite/Postgres; SQLite migration
+  giữ lịch cũ. Bulk tuần tự trong một backend process để tránh chồng lấn append.
+- Giới hạn: request đồng bộ, UI timeout 600 giây, không background queue/checkpoint
+  hoặc khóa nhiều worker; đợt dài cần chia nhỏ. Chưa test PostgreSQL/UAT/GreenNode thật.
+- Bước 4 có phân trang 100/500/1000 record; CSV ghi rõ chỉ xuất trang đang xem.
+- Hướng dẫn đầy đủ: `docs/CRAWL_SUPPORT.md`.
+- Kiểm chứng phase 8a–8b: **371 test pass** offline (356 test trước đó và 15 test mới),
+  một deprecation warning Starlette/AnyIO. Bao gồm cookie isolation, redirect,
+  báo lỗi TypeError sau fetch, AI metadata, backfill/phân trang/lọc ngày, dedup khi
+  chạy chồng nhau và lịch sử hơn 1000 record, SQLite migration/reload và UI chuyển cấu hình sang lịch.
+  Chưa gọi mạng, AI hay credential thật; chưa kiểm chứng PostgreSQL và deploy thực tế.
+
+## Runner integration — cập nhật 2026-09-16
+
+### Điều chỉnh phạm vi gen và đăng nhập theo yêu cầu người dùng
+- Thay quyết định phase 6c: Describe/Record chỉ sinh steps và header testcases,
+  không sinh dòng testcase, dữ liệu input/expected hoặc settings (kể cả mẫu).
+  Schema AI từ chối cả trường settings/testcases nếu model cố trả về.
+- Thêm prepare_runner.py ghép local với config có sẵn: giữ dữ liệu người dùng,
+  bổ sung cột trống; settings giữ nguyên mặc định. Mỗi đề xuất settings có lý do
+  gắn với hàm executor và hỏi riêng từng mục trước áp vào bản sao.
+- Đăng nhập chỉ dành cho Runner; crawl công khai vẫn dùng không cần đăng nhập.
+  Thêm test chạy crawl với Runner đã bật nhưng không có session; Runner trả 401.
+
+### Phase 7c: kiểm tra config trước chạy
+- Tiếp tục phát triển preflight local: báo thiếu settings/testcase active, locator
+  nháp, màn hình không khớp flow/result. Chỉ báo số dòng/mã lỗi, không in nội dung
+  dữ liệu, mở browser hay đọc secret. Không tự thay đổi config hoặc kích hoạt step.
+- Kiểm chứng chung cho điều chỉnh phạm vi và phase 7c: **356 test pass**, gồm
+  từ chối settings/testcases từ AI, xuất header-only, giữ dữ liệu template,
+  duyệt riêng từng setting, preflight và crawl công khai khi Runner bật.
+  Còn một deprecation warning Starlette/AnyIO; chưa gọi GreenNode/UAT thật.
+
+### Phase 7b: repair local có xác nhận
+- Thêm picker Ctrl+Alt+L theo phần tử người dùng trỏ tới; chỉ lấy CSS cấu trúc,
+  không lấy input value/text/attribute hay gửi DOM lên cloud.
+- Kiểm tra lại identity/visibility/uniqueness sau xác nhận; hash workbook phải
+  khớp lúc bắt đầu. Xuất bản sao, không sửa nguồn hoặc ghi đè output.
+- Giữ các sheet/dữ liệu, chỉ đổi locator dòng chọn; mọi step/testcase trong bản
+  sao inactive. Thêm repair_review ghi nguồn và thay đổi để rà soát.
+- Có hướng dẫn trong UI và cập nhật V2. Đây là repair người dùng chọn target;
+  AI discovery/repair vẫn chưa triển khai, browser UAT/hotkey thật chưa kiểm chứng.
+- Kiểm chứng: suite đầy đủ **354 test pass**; bổ sung test selection bị thay đổi
+  sau xác nhận rồi chạy riêng repair: **15 pass, 340 deselected**. Kiểm tra giữ
+  dữ liệu/sheet, hủy không ghi file, nguồn đổi bị từ chối và không ghi đè output.
+  Còn một deprecation warning Starlette/AnyIO.
+
+### Phase 7a: Inspector local
+- Thêm CLI kiểm tra locator workbook trong browser local do người dùng tự điều
+  hướng, dùng cùng builder với Runner. Không thực hiện step hoặc đọc input value.
+- Kiểm tra cả step inactive, ghi số phần tử khớp/visibility theo dòng; phân biệt
+  missing, ambiguous, hidden, unresolved, error và mục cần kiểm tra thủ công.
+- Report chỉ gồm hash workbook, thời điểm, số màn hình/tab/dòng và số đếm/trạng thái;
+  không chứa DOM, URL, selector hay dữ liệu nhập. Không sửa workbook/ghi đè report.
+- Thêm tab Inspector local, cập nhật V2 và hướng dẫn. AI repair chưa triển khai;
+  report xuất chủ động do người dùng quản lý, không phải artifact của run.
+- Kiểm chứng: suite đầy đủ **339 test pass**; sau bổ sung metadata snapshot và
+  group review, chạy lại riêng Inspector **16 pass, 324 deselected**. Browser
+  dùng giả lập, chưa chạy UAT thật; còn một deprecation warning Starlette/AnyIO.
+
 ## Runner integration — cập nhật 2026-09-15
 
 ### Phase 6c: Generate toàn bộ workbook

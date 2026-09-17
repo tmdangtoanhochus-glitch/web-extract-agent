@@ -68,6 +68,7 @@ CREATE TABLE IF NOT EXISTS scheduled_jobs (
     write_mode TEXT,
     key_field TEXT,
     image_fields TEXT,
+    crawl_options TEXT,
     trigger_type TEXT NOT NULL,
     trigger_args TEXT NOT NULL,
     enabled INTEGER NOT NULL DEFAULT 1,
@@ -106,6 +107,7 @@ _MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
         "write_mode": "TEXT",
         "key_field": "TEXT",
         "image_fields": "TEXT",
+        "crawl_options": "TEXT",
         "last_error_traceback": "TEXT",
     },
     "records": {
@@ -326,16 +328,17 @@ class SQLiteStorage(StorageEngine):
         write_mode: Optional[str] = None,
         key_field: Optional[str] = None,
         image_fields: Optional[list[str]] = None,
+        crawl_options: Optional[dict] = None,
     ) -> ScheduledJob:
         job_id = uuid.uuid4().hex
         created_at = utcnow()
         image_fields = image_fields or []
         self._conn.execute(
             "INSERT INTO scheduled_jobs (job_id, dataset_id, url, field_descriptions, "
-            "storage_mode, file_path, write_mode, key_field, image_fields, "
+            "storage_mode, file_path, write_mode, key_field, image_fields, crawl_options, "
             "trigger_type, trigger_args, enabled, created_at, last_run_at, last_status, "
             "last_error_traceback) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, NULL)",
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?, NULL, NULL, NULL)",
             (
                 job_id,
                 dataset_id,
@@ -346,6 +349,7 @@ class SQLiteStorage(StorageEngine):
                 write_mode,
                 key_field,
                 json.dumps(image_fields),
+                json.dumps(crawl_options) if crawl_options else None,
                 trigger_type,
                 json.dumps(trigger_args),
                 created_at.isoformat(),
@@ -362,6 +366,7 @@ class SQLiteStorage(StorageEngine):
             write_mode=write_mode,
             key_field=key_field,
             image_fields=image_fields,
+            crawl_options=crawl_options,
             trigger_type=trigger_type,
             trigger_args=trigger_args,
             enabled=True,
@@ -464,6 +469,7 @@ def _row_to_scheduled_job(row: sqlite3.Row) -> ScheduledJob:
         write_mode=row["write_mode"],
         key_field=row["key_field"],
         image_fields=json.loads(row["image_fields"]) if row["image_fields"] else [],
+        crawl_options=json.loads(row["crawl_options"]) if row["crawl_options"] else None,
         trigger_type=row["trigger_type"],
         trigger_args=json.loads(row["trigger_args"]),
         enabled=bool(row["enabled"]),

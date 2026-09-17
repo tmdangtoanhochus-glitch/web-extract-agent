@@ -15,12 +15,20 @@ from __future__ import annotations
 
 import dataclasses
 import logging
+import hashlib
+import json
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Response
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import JSONResponse
+from uuid import UUID, uuid4
+from urllib.parse import urlsplit
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, SecretStr
+from ..bulk_crawl import CrawlOptions, plan_urls, run_bulk, preview_bulk
+from .crawl_reports import create_report_router, context, exception_frames
 
 from ..ai.base import AIClient
 from ..ai.greennode_client import GreenNodeChatClient
@@ -40,6 +48,10 @@ _VALID_WRITE_MODES = ("append", "new_file", "overwrite_row")
 
 
 class CrawlRequest(BaseModel):
+    retry_of: UUID | None = None
+    cookie_header: SecretStr | None = None
+    cookie_origin: str | None = None
+    crawl_options: CrawlOptions | None = None
     url: str
     field_descriptions: dict[str, str]
     dataset_id: Optional[str] = None
@@ -63,6 +75,7 @@ class CrawlResponse(BaseModel):
 
 
 class ScheduleCreateRequest(BaseModel):
+    crawl_options: CrawlOptions | None = None
     url: str
     field_descriptions: dict[str, str]
     trigger_type: str  # "interval" | "cron" — truyền thẳng vào APScheduler
@@ -156,7 +169,6 @@ def create_app(
     if runner_service is not None:
         from .runner import create_runner_router
         from ..runner.service import RunnerError
-        from fastapi.responses import JSONResponse
 
         @app.exception_handler(RunnerError)
         async def runner_error_handler(request, exc):
@@ -171,8 +183,7 @@ def create_app(
         không (đúng khái niệm "liveness", không phải "dependency check")."""
         return {"status": "ok"}
 
-    @app.post("/crawl", response_model=CrawlResponse)
-    def crawl(req: CrawlRequest) -> CrawlResponse:
+    def crawl_one(req: CrawlRequest, request_fetcher) -> CrawlResponse:
         if not req.field_descriptions:
             raise HTTPException(status_code=422, detail="field_descriptions không được rỗng")
         if req.storage_mode not in ("db", "file"):
@@ -187,7 +198,7 @@ def create_app(
                 file_path=req.file_path,
                 write_mode=req.write_mode,
                 key_field=req.key_field,
-                fetcher=fetcher,
+                fetcher=request_fetcher,
                 ai_client=ai_client,
                 storage=storage,
                 confidence_threshold=confidence_threshold,
@@ -216,7 +227,7 @@ def create_app(
             field_descriptions=req.field_descriptions,
             dataset_id=req.dataset_id,
             dataset_name=req.dataset_name,
-            fetcher=fetcher,
+            fetcher=request_fetcher,
             ai_client=ai_client,
             storage=storage,
             confidence_threshold=confidence_threshold,
@@ -239,6 +250,96 @@ def create_app(
             confidence=result.record.confidence if result.record else None,
             needs_review=result.record.needs_review if result.record else None,
         )
+
+    @app.exception_handler(RequestValidationError)
+    async def safe_validation(request, exc):
+        return JSONResponse(status_code=422, content={"detail": [
+            {"loc": list(error["loc"]), "type": error["type"]} for error in exc.errors()]})
+
+    app.include_router(create_report_router(storage))
+
+    @app.post("/crawl")
+    def crawl(req: CrawlRequest, response: Response):
+        return crawl_impl(req, response)
+
+    @app.post("/crawl/preview")
+    def preview(req: CrawlRequest, response: Response):
+        return crawl_impl(req, response, preview=True)
+
+    def crawl_impl(req: CrawlRequest, response: Response, preview=False):
+        request_id = str(uuid4())
+        headers = {"X-Crawl-Request-ID": request_id}
+        response.headers.update(headers)
+        metadata = context(req.url, req.field_descriptions, req.storage_mode)
+        fingerprint = hashlib.sha256(json.dumps(req.model_dump(mode="json", exclude={
+            "cookie_header", "cookie_origin", "dataset_id", "dataset_name", "retry_of"}),
+            sort_keys=True, ensure_ascii=False).encode()).hexdigest()
+        metadata.update(config_fingerprint=fingerprint, operation="preview" if preview else "crawl")
+        if req.retry_of:
+            metadata["retry_of"] = str(req.retry_of)
+        if req.crawl_options:
+            metadata["crawl_options"] = req.crawl_options.model_dump(mode="json", exclude={"table_selector"})
+        storage.add_audit_log("crawl_request", job_id=request_id, detail=metadata)
+        try:
+            retry_indices = None
+            if req.retry_of:
+                if preview or not req.crawl_options or req.crawl_options.mode != "table" or req.storage_mode != "db":
+                    raise HTTPException(400, "Chỉ chạy lại lượt lỗi cho bảng lưu DB")
+                entries = storage.list_audit_log(job_id=str(req.retry_of), limit=100)
+                parent = next((e.detail for e in entries if e.event_type == "crawl_request"), {})
+                outcome = next((e.detail for e in entries if e.event_type == "crawl_outcome"), {})
+                if (parent.get("config_fingerprint") != fingerprint or parent.get("operation") != "crawl"
+                        or not req.dataset_id or req.dataset_id != outcome.get("dataset_id")):
+                    raise HTTPException(409, "Cấu hình hoặc dataset đã đổi; không thể chạy lại đợt cũ")
+                retry_indices = [item["index"] for item in outcome.get("results") or []
+                                 if item.get("status") not in {"saved", "unchanged", "empty"}]
+                if not retry_indices:
+                    raise HTTPException(409, "Đợt được chọn không có lượt lỗi để chạy lại")
+            request_fetcher = fetcher
+            if req.cookie_header:
+                cookie = req.cookie_header.get_secret_value()
+                origin = urlsplit(req.cookie_origin or "")
+                target = urlsplit(req.url)
+                if (not cookie or len(cookie) > 16384 or "\r" in cookie or "\n" in cookie
+                    or origin.scheme not in {"http", "https"} or not origin.hostname
+                    or origin[:2] != target[:2] or target.username or target.password):
+                    raise HTTPException(400, "Invalid cookie or cookie origin")
+                if not hasattr(fetcher, "with_request_cookie"):
+                    raise HTTPException(400, "Fetcher does not support per-request cookies")
+                request_fetcher = fetcher.with_request_cookie(req.url, cookie)
+            if req.crawl_options:
+                if not req.field_descriptions or req.storage_mode not in {"db", "file"}:
+                    raise HTTPException(400, "Fields and valid storage mode required")
+                if req.storage_mode == "file":
+                    _validate_file_storage_config(req.file_path, req.write_mode, req.key_field, req.field_descriptions)
+                try:
+                    if preview:
+                        result = preview_bulk(url=req.url, options=req.crawl_options,
+                            field_descriptions=req.field_descriptions, fetcher=request_fetcher,
+                            storage_mode=req.storage_mode, write_mode=req.write_mode or "append", image_fields=req.image_fields)
+                    else:
+                        result = run_bulk(url=req.url, field_descriptions=req.field_descriptions,
+                            options=req.crawl_options, fetcher=request_fetcher, ai_client=ai_client, storage=storage,
+                            dataset_id=req.dataset_id, dataset_name=req.dataset_name, storage_mode=req.storage_mode,
+                            file_path=req.file_path, write_mode=req.write_mode or "append", image_fields=req.image_fields,
+                            confidence_threshold=confidence_threshold, retry_indices=retry_indices)
+                except ValueError as exc:
+                    raise HTTPException(400, str(exc)) from None
+            else:
+                if preview:
+                    raise HTTPException(400, "Bật kéo nhiều lượt / kéo bảng để xem trước")
+                result = crawl_one(req, request_fetcher).model_dump()
+            storage.add_audit_log("crawl_outcome", job_id=request_id,
+                                  detail={key: result.get(key) for key in ("status", "dataset_id", "saved", "skipped", "failed", "results")})
+            return {**result, "request_id": request_id}
+        except HTTPException as exc:
+            storage.add_audit_log("crawl_outcome", job_id=request_id, detail={"status": "error", "http_status": exc.status_code})
+            exc.headers = {**(exc.headers or {}), **headers}
+            raise
+        except Exception as exc:
+            storage.add_audit_log("crawl_outcome", job_id=request_id,
+                                  detail={"status": "error", "error_type": type(exc).__name__, "frames": exception_frames(exc)})
+            raise HTTPException(500, "Crawl failed; send request ID to admin", headers=headers) from None
 
     @app.get("/datasets")
     def list_datasets() -> list[dict]:
@@ -272,6 +373,21 @@ def create_app(
 
     @app.post("/schedules")
     def create_schedule(req: ScheduleCreateRequest) -> dict:
+        if req.crawl_options:
+            try:
+                plan_urls(req.url, req.crawl_options)
+                if req.crawl_options.start_date:
+                    raise ValueError("Schedules require a rolling window")
+                if req.crawl_options.mode == "table" and set(req.crawl_options.columns) != set(req.field_descriptions):
+                    raise ValueError("Invalid columns")
+                if req.crawl_options.date_field and req.crawl_options.date_field not in req.crawl_options.columns:
+                    raise ValueError("Invalid date field")
+                if req.image_fields and req.crawl_options.mode == "table":
+                    raise ValueError("Table image downloads unsupported")
+                if req.storage_mode == "file" and req.write_mode != "append":
+                    raise ValueError("Bulk file schedules require append")
+            except ValueError:
+                raise HTTPException(400, "Invalid bulk schedule configuration")
         if req.storage_mode not in ("db", "file"):
             raise HTTPException(status_code=400, detail="storage_mode phải là 'db' hoặc 'file'")
 
@@ -288,6 +404,7 @@ def create_app(
                 write_mode=req.write_mode,
                 key_field=req.key_field,
                 image_fields=req.image_fields,
+                crawl_options=req.crawl_options.model_dump(mode="json") if req.crawl_options else None,
             )
             return dataclasses.asdict(job)
 
@@ -309,6 +426,7 @@ def create_app(
             trigger_type=req.trigger_type,
             trigger_args=req.trigger_args,
             image_fields=req.image_fields,
+                crawl_options=req.crawl_options.model_dump(mode="json") if req.crawl_options else None,
         )
         return dataclasses.asdict(job)
 
@@ -353,12 +471,7 @@ def _build_default_app() -> FastAPI:
     fetcher = HttpxFetcher(
         user_agent=settings.fetch_user_agent,
         delay_seconds=settings.fetch_default_delay_seconds,
-        # Cookie đăng nhập thủ công theo domain (người dùng tự lưu qua panel
-        # admin) — KHÔNG tự động đăng nhập, chỉ tra cứu + gắn header nếu đã
-        # có sẵn cho domain của URL đang fetch (xem HttpxFetcher docstring).
-        credential_provider=lambda domain: (
-            (cred := storage.get_site_credential(domain)) and cred.cookie_header
-        ),
+
     )
     ai_client = GreenNodeChatClient(
         base_url=settings.ai_base_url,

@@ -72,7 +72,8 @@ def create_runner_router(service, planner=None):
 
     @router.get("/authoring/capabilities")
     def authoring_capabilities(u=Depends(user)):
-        return {"describe": planner is not None, "inspector": False, "repair": False}
+        return {"describe": planner is not None, "inspector": False, "local_inspector": True,
+                "local_repair": True, "repair": False}
 
     @router.post("/authoring/describe")
     def describe(req: Describe, u=Depends(user)):

@@ -6,6 +6,7 @@ thay vì engine này.
 from __future__ import annotations
 
 import logging
+from urllib.parse import urlsplit
 from typing import Callable, Optional
 
 import httpx
@@ -58,6 +59,17 @@ class HttpxFetcher(FetchEngine):
         self._injected_client = client
         self._rate_limiter = DomainRateLimiter(delay_seconds)
         self._credential_provider = credential_provider
+        self._request_cookie = None
+        self._cookie_origin = None
+
+    def with_request_cookie(self, url: str, cookie: str):
+        """New fetcher per request; no shared credential persistence or redirects across origins."""
+        clone = HttpxFetcher(self._user_agent, self._timeout_seconds, self._robots_checker,
+                             self._injected_client)
+        clone._rate_limiter = self._rate_limiter
+        clone._request_cookie = cookie
+        clone._cookie_origin = urlsplit(url)[:2]
+        return clone
 
     def _wait_for_domain(self, url: str) -> None:
         self._rate_limiter.wait(domain_of(url))
@@ -83,6 +95,32 @@ class HttpxFetcher(FetchEngine):
             follow_redirects=True,
         )
         try:
+            if self._request_cookie is not None:
+                current = url
+                for _ in range(11):
+                    if urlsplit(current)[:2] != self._cookie_origin:
+                        return FetchResult(url=url, final_url=url, status_code=None, html=None,
+                                           fetched_at=utcnow(), success=False, error="cookie_cross_origin_redirect_blocked")
+                    if current != url:
+                        if not self._robots_checker.can_fetch(current, self._user_agent):
+                            return FetchResult(url=url, final_url=url, status_code=None, html=None,
+                                fetched_at=utcnow(), success=False, error="blocked_by_robots_txt")
+                        self._wait_for_domain(current)
+                    response = client.get(current, headers={"User-Agent": self._user_agent,
+                        "Cookie": self._request_cookie}, follow_redirects=False)
+                    if response.has_redirect_location:
+                        current = str(response.url.join(response.headers["location"]))
+                        continue
+                    html = response.text
+                    for part in self._request_cookie.split(";"):
+                        value = part.partition("=")[2].strip()
+                        if value:
+                            html = html.replace(value, "[REDACTED]")
+                    return FetchResult(url=url, final_url=str(response.url), status_code=response.status_code,
+                        html=html, fetched_at=utcnow(), success=response.is_success,
+                        error=None if response.is_success else f"http_{response.status_code}")
+                return FetchResult(url=url, final_url=url, status_code=None, html=None,
+                                   fetched_at=utcnow(), success=False, error="redirect_limit")
             # Set header tường minh trên từng request (không chỉ dựa vào default
             # header của client) để user-agent luôn đúng kể cả khi client được
             # inject từ ngoài (test double).
@@ -102,6 +140,9 @@ class HttpxFetcher(FetchEngine):
                 error=None if response.is_success else f"http_{response.status_code}",
             )
         except httpx.HTTPError as exc:
+            if self._request_cookie is not None:
+                return FetchResult(url=url, final_url=url, status_code=None, html=None,
+                                   fetched_at=utcnow(), success=False, error="request_cookie_fetch_failed")
             logger.warning("Fetch lỗi cho %s: %s", url, exc)
             return FetchResult(
                 url=url,

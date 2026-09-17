@@ -71,6 +71,24 @@ def test_health_returns_200_ok(client):
     assert response.json() == {"status": "ok"}
 
 
+def test_runner_login_boundary_does_not_gate_public_crawl(tmp_path):
+    from src.runner.repository import Repository
+    from src.runner.service import Service
+    repo = Repository()
+    storage = SQLiteStorage(":memory:")
+    app = create_app(fetcher=_FakeFetcher(), ai_client=_FakeAIClient(), storage=storage,
+                     runner_service=Service(repo, tmp_path / "runner"))
+    client = TestClient(app)
+    try:
+        response = client.post("/crawl", json={"url": "https://example.test", "field_descriptions": {"price": "giá"}, "dataset_name": "Public"})
+        assert response.status_code == 200
+        for route in ("/runner/me", "/runner/runs", "/runner/agents", "/runner/authoring/capabilities"):
+            assert client.get(route).status_code == 401
+        assert client.post("/runner/authoring/describe", json={"description": "Điền role rồi đăng nhập", "reviewed_no_secrets": True}).status_code == 401
+    finally:
+        repo.close()
+
+
 def test_crawl_creates_dataset_and_returns_saved_status(client):
     response = client.post(
         "/crawl",

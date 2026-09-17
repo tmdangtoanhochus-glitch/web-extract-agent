@@ -16,12 +16,10 @@ from runner_agent.authoring import planned_workbook
 
 DESCRIPTION = "Điền tài khoản role RM rồi bấm đăng nhập."
 VALID = {
-    "settings": {"screen_flow": "login", "login_screen": "login", "result_screen": "result"},
     "steps": [
         {"screen": "login", "step": "username", "action": "fill", "value_source": "account"},
         {"screen": "login", "step": "password", "action": "fill", "value_source": "account"},
         {"screen": "login", "step": "submit", "action": "click", "value_source": "empty"}],
-    "testcases": [{"tc_id": "LOGIN_001", "mo_ta": "Đăng nhập role RM", "role_code": "RM"}],
 }
 
 
@@ -43,10 +41,10 @@ def test_chat_contract_and_inactive_workbook():
     assert payload["messages"][1]["content"] == DESCRIPTION
     wb = load_workbook(io.BytesIO(planned_workbook(plan)))
     assert all(row[4] == ":not(*)" and row[6] == "N" for row in list(wb["steps"].values)[1:])
-    assert list(wb["testcases"].values)[1][2] == "N"
+    assert wb["testcases"].max_row == 1
     assert "password" in [row[1] for row in list(wb["steps"].values)[1:]]
     assert len(list(wb["steps"].values)[0]) == 13
-    assert dict(list(wb["settings"].values)[1:])["login_screen"] == "login"
+    assert "settings" not in wb.sheetnames
     wb.close()
 
 

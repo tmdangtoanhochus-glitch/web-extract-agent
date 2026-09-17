@@ -1,9 +1,42 @@
 # Thiết kế tích hợp Runner local với UI/GreenNode
 
-## Trạng thái triển khai và quyết định bổ sung (2026-09-15)
+## Trạng thái triển khai và quyết định bổ sung (cập nhật 2026-09-16)
+
+### Bổ sung ranh giới crawler và Runner — phase 8
+
+- Crawler và gửi báo lỗi vẫn công khai, không dùng session/token Runner. Admin debug
+  giữ Basic Auth riêng. Cookie nguồn nhập tại Bước 3 chỉ dùng cho đợt crawl đó,
+  không lưu DB và không dùng cookie chung của admin; lịch nguồn cần cookie chưa hỗ trợ.
+- Crawler có pipeline bulk lịch sử/bảng riêng; scheduler crawler gọi lại pipeline đó,
+  lưu cấu hình trong `scheduled_jobs.crawl_options`. Không đưa thao tác crawl sang
+  local Runner, không thay đổi workbook/testcase/settings hay auth của Runner.
+- Báo lỗi UI nối với audit crawl qua request ID; AI debug chỉ nhận metadata đã giới hạn,
+  admin chủ động yêu cầu chẩn đoán. Không tự sửa code hoặc dùng dữ liệu này để gen testcase.
+- Chi tiết và giới hạn triển khai: `docs/CRAWL_SUPPORT.md` (một worker, bulk đồng bộ,
+  bảng HTML tĩnh, lịch khoảng ngày UTC; chưa kiểm chứng dịch vụ thật).
+
+### Bổ sung phase 9: preview/retry crawler
+
+- Preview crawler chỉ lập kế hoạch và lấy mẫu trang bảng đầu, không gọi AI hoặc
+  tạo dataset/record. Mẫu chỉ trả về UI, không lưu trong audit/đưa vào AI debug.
+- Retry chọn lọc chỉ dành cho bảng DB và do người dùng yêu cầu. Fingerprint cấu
+  hình và kết quả audit xác định số lượt cần chạy lại; giữ cùng dataset và dedup.
+  Không áp dụng retry này cho local Runner hoặc testcase UAT. Quy tắc không replay
+  Runner sau mất heartbeat vẫn giữ nguyên.
+- Cookie không nằm trong fingerprint hay snapshot cấu hình; phải nhập lại cho
+  retry. Không bổ sung settings, gen testcase, gửi DOM hay thay đổi auth Runner.
+
+### Runner
 
 Phần dưới là thiết kế đích. Bản tích hợp hiện tại hoàn thành nền tảng chạy
 workbook qua agent local và UI; chưa hoàn thành toàn bộ thiết kế đích.
+
+**Phạm vi gen chốt theo người dùng:** chỉ sinh sheet steps và cột template của
+testcases. Không sinh dòng testcase, dữ liệu hoặc expected value. Settings không
+được sinh lại; chỉ đề xuất thay đổi khi hàm executor cần, giải thích lý do và hỏi
+người dùng từng mục, mặc định giữ nguyên. Quyết định này thay thế phần gen toàn bộ
+settings/testcase của phase 6c. Đăng nhập Runner chỉ áp dụng cho Runner; crawl công
+khai không cần đăng nhập. Panel quản trị crawler nhạy cảm giữ cơ chế bảo vệ riêng.
 
 - Tái sử dụng `docs/runner.py` mới qua `execute_config`; không phụ thuộc các
   module `core_*` của runner cũ. Process riêng cho mỗi run, agent polling HTTP.
@@ -24,25 +57,38 @@ workbook qua agent local và UI; chưa hoàn thành toàn bộ thiết kế đí
   hoặc thông báo muộn, hạn xóa được kéo dài để giữ đủ thời gian cảnh báo.
 - Record local bản đầu đã có CLI `record_runner.py` và hướng dẫn trong UI;
   chỉ capture click/fill/select bằng CSS cấu trúc, không lấy input value, text,
-  attribute hoặc navigation URL. Export workbook nháp inactive và placeholder
+  attribute hoặc navigation URL. Export step inactive và header testcases, không có dữ liệu mẫu
   local, không gửi recording lên cloud. Giới hạn 1000 event, chưa hỗ trợ iframe,
   shadow DOM, upload, checkbox/radio hoặc assertion tự động. Đây là một phần
   Record Mode, chưa phải toàn bộ recorder/inspector ở mục 5–7.
 - Describe bản đầu đã có: `/runner/authoring/describe` yêu cầu đăng nhập và xác
   nhận nội dung không nhạy cảm, dùng GreenNode chat theo cấu hình runtime hiện có.
-  `RUNNER_AI_ENABLED` mặc định false. AI trả workbook plan gồm settings, steps
-  và testcases; Python validate schema và liên kết giữa sheet rồi export đầy đủ
-  cột, nhiều scenario và expected placeholder. Thay thế schema action/target ban đầu.
-  Có đủ 13 cột step và các setting executor đang đọc; optional dùng default an toàn.
-  Workbook inactive với locator `:not(*)` chưa được xác định; các selector setting
-  chưa biết cũng được đánh dấu cần rà soát. Input/expected chỉ dùng biến local.
+  `RUNNER_AI_ENABLED` mặc định false. AI chỉ trả steps theo schema đóng;
+  Python suy ra header testcases (metadata, input, expected), tuyệt đối không tạo dòng dữ liệu.
+  Có đủ 13 cột step, locator `:not(*)` và active=N; không có sheet settings tự sinh.
+  `prepare_runner.py` ghép local với config có sẵn, giữ testcase người dùng nhập,
+  chỉ thêm cột trống. Settings giữ nguyên trừ khi người dùng duyệt từng đề xuất có
+  giải thích từ run_screen/read_and_verify; hiện chỉ đề xuất screen_flow/login_screen/result_screen.
+  `preflight_runner.py` kiểm tra tĩnh sau khi người dùng nhập dữ liệu, không đọc secret.
   Runner đã hỗ trợ resolve expected placeholder trước so sánh; thiếu biến báo lỗi.
-  Gen tối đa 100 step/25 testcase, assertion exact khi được yêu cầu; chưa tự gen
+  Gen tối đa 100 step, assertion exact khi được yêu cầu; expected người dùng tự nhập. Chưa tự gen
   repeat group hoặc toàn bộ expected của nhiều result block.
   Không tự truy cập website, tạo run hoặc sửa testcase đang chạy. Không lưu mô tả,
   phản hồi model hoặc workbook trên server; audit chỉ ghi event và user.
 - Đây là phần lập nháp của Describe, chưa phải flow AI+MCP khám phá website ở mục 7.
-  Inspector, kiểm chứng locator và AI repair vẫn là phase tiếp theo.
+  Inspector local bản đầu đã có (`inspect_runner.py`): người dùng tự điều hướng,
+  chọn màn hình/tab để kiểm tra số phần tử khớp và visibility, dùng cùng locator
+  builder với Runner. Không thực hiện step, thu thập input value/DOM thô, sửa workbook hoặc gửi
+  report lên cloud. Report chỉ metadata (hash workbook, thời điểm, số dòng và
+  trạng thái). Wait/group/dropdown/read method phức tạp cần kiểm tra thủ công.
+  Report xuất chủ động được người dùng quản lý, không áp retention artifact run.
+  Repair local đã có (`repair_runner.py`): người dùng hover phần tử rồi Ctrl+Alt+L,
+  công cụ dựng CSS cấu trúc, kiểm tra duy nhất/visibility/identity và yêu cầu xác
+  nhận trước xuất workbook mới. Hash nguồn chống áp sửa lên phiên bản file đã đổi.
+  Giữ dữ liệu các sheet, thay locator của một dòng và đặt toàn bộ step/testcase
+  inactive; thêm sheet repair_review, không sửa file gốc hoặc upload DOM/input.
+  Đây là repair do người dùng chọn target, không phải AI tự chọn. AI discovery,
+  AI repair và kiểm chứng hành vi vẫn là phase tiếp theo.
   PostgreSQL và deployment GreenNode cần kiểm chứng riêng trước vận hành.
 
 Hướng dẫn cài đặt và giới hạn: [docs/RUNNER_SETUP.md](docs/RUNNER_SETUP.md).

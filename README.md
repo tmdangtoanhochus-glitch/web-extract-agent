@@ -196,4 +196,7 @@ lưu dạng `dataset` + JSON linh hoạt thay vì tạo bảng SQL riêng từng
 
 Hướng dẫn bật Runner, tạo tài khoản và chạy agent: [Runner setup](docs/RUNNER_SETUP.md).
 Runner mặc định tắt. Bản tích hợp hiện hỗ trợ workbook local/Hybrid và summary;
-Record local và Describe AI xuất workbook nháp đã có; Inspector/AI repair chưa triển khai.
+Record/Describe chỉ tạo steps và header testcases; người dùng tự nhập testcase.
+Settings giữ nguyên, chỉ đổi khi người dùng duyệt đề xuất có lý do. Có chuẩn bị config local,
+preflight, Inspector và repair local. Crawl không cần đăng nhập; Runner cần đăng nhập.
+AI discovery/repair chưa triển khai.
