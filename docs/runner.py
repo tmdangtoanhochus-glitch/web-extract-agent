@@ -12,6 +12,7 @@ from dotenv import load_dotenv
 from playwright.sync_api import sync_playwright, Page
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from runner_agent.sanitize import Redactor
+from src.runner.scoped_locator import PREFIX as SCOPE_PREFIX, resolve as resolve_scope
 
 _redactor = Redactor()
 _case_outcomes = []
@@ -196,6 +197,8 @@ def write_log(log_path: Path, tc_id: str, mo_ta: str, status: str):
 # ── Locator builder ──────────────────────────────────────
 
 def build_locator(page: Page, locator_type: str, locator: str):
+    if locator_type.lower() in {"css", ""} and locator.startswith(SCOPE_PREFIX):
+        return resolve_scope(page, locator)
     match locator_type.lower():
         case "css":
             return page.locator(locator)
@@ -338,6 +341,11 @@ def do_fill_enter(page: Page, lt: str, loc: str, value: str):
 
 
 def do_click(page: Page, lt: str, loc: str, wait_sel: str, tc_id: str = ""):
+    if loc.startswith(SCOPE_PREFIX):
+        build_locator(page, lt, loc).click()
+        if wait_sel:
+            do_wait(page, wait_sel, tc_id=tc_id)
+        return
     build_locator(page, lt, loc).click()
     if not wait_sel:
         return
@@ -545,6 +553,9 @@ def do_force_select_antd(page: Page, lt: str, loc: str, value: str,
 
 
 def do_wait(page: Page, wait_sel: str, tc_id: str = ""):
+    if wait_sel.startswith(SCOPE_PREFIX):
+        resolve_scope(page, wait_sel).wait_for(state="visible")
+        return
     if wait_sel == "spin":
         page.locator(".ant-spin-spinning").first.wait_for(
             state="hidden", timeout=SPINNER_TIMEOUT)
@@ -603,7 +614,7 @@ def read_result_field(page: Page, step: pd.Series, block_idx: int,
                     .locator("input").first.input_value() or ""
                 )
             case "css_input":
-                return page.locator(locator).input_value() or ""
+                return build_locator(page, "css", locator).input_value() or ""
             case "label_span_title":
                 return (
                     page.locator(f"label[for='{locator}']")
@@ -625,7 +636,7 @@ def read_result_field(page: Page, step: pd.Series, block_idx: int,
                     .inner_text().strip()
                 )
             case "css_disabled":
-                return page.locator(locator).evaluate("el => el.value") or ""
+                return build_locator(page, "css", locator).evaluate("el => el.value") or ""
             case _:
                 tprint(f"    [WARN] read_method '{method}' chua duoc ho tro", tc_id=tc_id)
                 return ""
@@ -689,7 +700,7 @@ def _compare_values(expected: str, actual: str, threshold: str) -> tuple[bool, s
 
 VALID_ACTIONS = {
     "fill", "force_fill", "fill_enter", "click", "click_if_exists",
-    "check", "radio", "select_antd", "force_select_antd", "select",
+    "check", "uncheck", "upload", "radio", "select_antd", "force_select_antd", "select",
     "nth", "form_item", "fill_sequence", "wait",
     "read_result", "read_result_single", "read_result_group",
 }
@@ -842,6 +853,11 @@ def run_step(page: Page, step: pd.Series, value: str, tc_id: str = ""):
             do_click_if_exists(page, lt, loc, wait_sel, tc_id=tc_id)
         case "check":
             do_check(page, lt, loc)
+        case "uncheck":
+            build_locator(page, lt, loc).uncheck()
+        case "upload":
+            from runner_agent.upload import local_upload_path
+            build_locator(page, lt, loc).set_input_files(local_upload_path(value))
         case "radio":
             if value:
                 do_radio(page, lt, loc, value)

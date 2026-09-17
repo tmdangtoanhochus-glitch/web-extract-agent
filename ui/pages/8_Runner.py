@@ -18,6 +18,9 @@ def api(method, path, body=None, binary=False):
         with httpx.Client(base_url=API, headers=headers, timeout=30) as client:
             response = client.request(method, "/runner" + path, json=body)
         if response.status_code == 401:
+            for key in list(st.session_state):
+                if key.startswith("runner_recording_"):
+                    st.session_state.pop(key, None)
             st.session_state.pop("runner_session", None)
             st.session_state.pop("runner_describe_draft", None)
             st.session_state.pop("runner_locator_draft", None)
@@ -53,6 +56,9 @@ if not me:
     st.stop()
 st.caption(f"{me['username']} · {me['role']}")
 if st.sidebar.button("Đăng xuất Runner"):
+    for key in list(st.session_state):
+        if key.startswith("runner_recording_"):
+            st.session_state.pop(key, None)
     api("POST", "/logout")
     st.session_state.pop("runner_session", None)
     st.session_state.pop("runner_describe_draft", None)
@@ -105,7 +111,7 @@ with tabs[-2]:
     st.write("Mở terminal tại project trên máy truy cập được website và chạy:")
     st.code("python record_runner.py --output config/Recorded_Draft.xlsx", language="bash")
     st.write("Trong browser mới, tự mở website và thao tác. Đóng các tab để xuất workbook nháp.")
-    st.caption("Recorder ghi click, fill và select chuẩn bằng vị trí phần tử; không ghi giá trị input, nội dung trang hoặc URL.")
+    st.caption("Recorder ghi click, fill, select, check/uncheck và upload bằng vị trí phần tử, hỗ trợ iframe/shadow DOM mở; không ghi giá trị input, nội dung file hoặc URL.")
     st.write("Ctrl+Alt+N: bắt đầu màn hình kế tiếp trước khi thao tác trên màn hình đó. "
              "Ctrl+Alt+P: tạm dừng/tiếp tục ghi. Trạng thái và số màn hình hiện ở góc browser.")
     st.write("Rê chuột lên phần tử rồi Ctrl+Alt+W để thêm bước chờ hiển thị. "
@@ -113,9 +119,12 @@ with tabs[-2]:
              "bạn tự nhập giá trị kỳ vọng. Chỉ đánh dấu đọc kết quả trên một màn hình cuối.")
     st.write("Workbook ghi step inactive và header testcases, không sinh testcase/settings. Ghép vào config hiện có bằng lệnh bên dưới, "
              "tự nhập testcase và rà soát trước khi bật các dòng cần chạy.")
-    st.info("Iframe, shadow DOM, upload, checkbox/radio và dropdown tùy biến cần cấu hình thủ công. "
+    st.info("Recorder hỗ trợ iframe, shadow DOM mở, chọn file và checkbox/radio. "
+            "Không thu tên/nội dung file; bạn tự nhập đường dẫn file trong testcase. Shadow DOM đóng cần cấu hình riêng. "
             "Recorder không tự nhận diện chuyển màn hình hoặc thu URL; dùng phím tắt để chia màn hình. "
             "Locator theo vị trí có thể đổi khi giao diện thay đổi. Xem Inspector để kiểm tra và đề xuất repair có xác nhận.")
+    from ui.runner_recording import render as render_recording
+    render_recording(api, capabilities if isinstance(capabilities, dict) else {})
     st.subheader("Ghép step vào config trên máy local")
     st.code("python prepare_runner.py --template config/Existing.xlsx --draft config/Recorded_Draft.xlsx --output config/Prepared.xlsx", language="bash")
     st.caption("Áp dụng cho cả nháp Describe và Record. Giữ nguyên settings và testcase bạn đã nhập; chỉ bổ sung header còn thiếu. "

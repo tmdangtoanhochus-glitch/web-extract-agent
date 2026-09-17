@@ -6,7 +6,7 @@ Identifier = Annotated[str, Field(pattern=r"^[a-z][a-z0-9_]{0,49}$")]
 STEP_COLUMNS = ["screen", "step", "action", "locator_type", "locator", "value_source",
                 "active", "wait_selector", "dropdown_selector", "match_type", "prefill_check", "group", "read_method"]
 BASE_CASE_COLUMNS = ["tc_id", "mo_ta", "active", "role_code", "specialized_bank"]
-VALUE_ACTIONS = {"fill", "force_fill", "fill_enter", "select", "select_antd", "force_select_antd", "radio", "nth", "form_item", "fill_sequence"}
+VALUE_ACTIONS = {"fill", "force_fill", "fill_enter", "select", "select_antd", "force_select_antd", "radio", "nth", "form_item", "fill_sequence", "upload"}
 READ_ACTIONS = {"read_result", "read_result_group", "read_result_single"}
 
 
@@ -17,7 +17,7 @@ class Strict(BaseModel):
 class WorkbookStep(Strict):
     screen: Identifier
     step: Identifier
-    action: Literal["fill", "force_fill", "fill_enter", "click", "click_if_exists", "check", "radio", "select_antd", "force_select_antd", "select", "nth", "form_item", "fill_sequence", "wait", "read_result", "read_result_single", "read_result_group"]
+    action: Literal["fill", "force_fill", "fill_enter", "click", "click_if_exists", "check", "uncheck", "upload", "radio", "select_antd", "force_select_antd", "select", "nth", "form_item", "fill_sequence", "wait", "read_result", "read_result_single", "read_result_group"]
     locator_type: Literal["css"] = "css"
     locator: Literal[":not(*)"] = ":not(*)"
     value_source: Literal["testcase", "account", "empty", "keyword"]
@@ -31,6 +31,8 @@ class WorkbookStep(Strict):
 
     @model_validator(mode="after")
     def coherent(self):
+        if self.action == "upload" and self.value_source != "testcase":
+            raise ValueError("Upload file must be supplied by the user in testcase")
         if self.group:
             # run_repeat_group has a narrower action dispatcher than run_step.
             if not ((self.action in {"fill", "fill_enter", "select", "select_antd", "force_select_antd"}

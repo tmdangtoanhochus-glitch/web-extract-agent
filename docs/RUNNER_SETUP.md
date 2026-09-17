@@ -77,7 +77,47 @@ cho giá trị cần resolve từ môi trường local.
   context source riêng và chạy smoke nằm trong RUNNER_CONTAINER_SMOKE.md.
   Chưa nghiệm thu GreenNode, PostgreSQL hoặc browser trên UAT thật.
 
-## Record local (bản đầu)
+## Record local và AI chuẩn hóa theo Runner (phase 26–27)
+
+Luồng đã chốt: người dùng tự thao tác trong Inspector/Recorder; AI biên dịch bằng
+chứng thành steps phù hợp executor. Không có chế độ AI tự điều hướng hoặc tự chạy
+nghiệp vụ. Runner chỉ thực thi khi người dùng chủ động kích hoạt cấu hình và tạo run.
+
+Để dùng AI chuẩn hóa, xuất thêm JSON cấu trúc:
+
+```powershell
+python record_runner.py --output config/Recorded_Draft.xlsx --events-output config/Recorded_Events.json
+```
+
+Trên UI Runner → Record local → **AI chuẩn hóa bản ghi theo Runner**, tải JSON,
+mô tả ý nghĩa flow/sự kiện, rà nội dung rồi xác nhận gửi metadata cho AI. Backend
+cần bật AI như Describe đang dùng; không cần thêm dependency hoặc file settings.
+XLSX ghi thô vẫn giữ để đối chiếu. JSON tối đa 500 sự kiện; `dropped` khác 0 nghĩa
+là bản ghi chưa đầy đủ, cần rà soát/ghi lại. Không upload JSON tự chứa giá trị nhập.
+
+Compiler yêu cầu mọi sự kiện được bao phủ đúng một lần, đúng thứ tự và màn hình.
+AI có thể gộp các fill liên tiếp trên cùng phần tử. Với Ant Design, chỉ khi có bằng
+chứng ô nhập chỉnh sửa được và một popup đang hiển thị, click mở + các fill tùy chọn
++ click chọn mới được gộp thành `select_antd`, `dropdown_selector=visible`,
+`match_type=exact`, `value_source=testcase`. Người dùng tự nhập giá trị lựa chọn.
+Trường hợp khác giữ action đã chứng minh hoặc đánh dấu cần kiểm tra, không đoán
+action/framework. Ant Design trong iframe/shadow chưa được gộp tự động vì hàm
+Runner tìm popup ở page chính.
+
+Sheet review ghi event ID nguồn và giải thích REVIEW_LOCATOR/REVIEW_REPEAT/
+REVIEW_CUSTOM_CONTROL. Locator chưa chắc có thể để placeholder. Không tự suy luận
+account, group, prefill, assertion hoặc wait chưa được ghi. Nhóm lặp cần xác định
+locator theo chỉ số; compiler chưa tự chuyển nhiều lần nhập thành group.
+Mọi step inactive, testcase chỉ header, không settings. Ghép bản đã chuẩn hóa bằng
+prepare_runner.py rồi tự nhập testcase và chạy Inspector/preflight trước khi dùng.
+
+Recorder hỗ trợ iframe lồng nhau và shadow DOM mở qua locator cấu trúc có scope;
+không thu URL/tên frame. Checkbox/radio ghi check/uncheck; upload chỉ ghi action
+và vị trí input, không đọc filename/nội dung file. Bạn tự nhập đường dẫn file ở
+testcase; executor từ chối các đường dẫn credential đã biết hoặc symlink/junction.
+Không ghi drag-and-drop, shadow DOM đóng hoặc suy luận nghiệp vụ từ text trang.
+
+## Record local không dùng AI
 
 Tạo sẵn thư mục config và chạy trên máy người dùng:
 
@@ -87,14 +127,22 @@ python record_runner.py --output config/Recorded_Draft.xlsx
 
 Browser mới không dùng profile đăng nhập có sẵn. Người dùng tự mở website và
 thao tác; đóng các tab để xuất workbook. Recorder không đọc file môi trường,
-giá trị input, text/attribute của phần tử hoặc URL điều hướng. Chỉ ghi click,
-fill và select HTML chuẩn ở trang chính, bằng CSS theo vị trí phần tử.
-Không gửi recording lên server. File output phải chưa tồn tại.
+giá trị input, text trang hoặc URL điều hướng. Ghi vị trí cấu trúc, loại thao tác
+và enum capability của widget; không xuất chuỗi class/attribute. Hỗ trợ click,
+fill, select, check/uncheck/upload trong iframe và shadow DOM mở.
+Nút dạng input type button/submit/reset/image được ghi thành click; không thu
+nhãn hoặc giá trị của nút. Các lần bấm riêng được giữ thành các bước riêng.
+Gõ liên tiếp trong cùng ô được ghi thành một bước. Nếu xen giữa là thao tác ở
+frame khác, pause/resume hoặc chuyển màn hình, lần nhập tiếp theo được ghi riêng.
+Không tự gửi recording lên server. Chỉ JSON được người dùng rà và xác nhận trên UI
+mới gửi cho AI. File output phải chưa tồn tại.
 
 Workbook nháp có step `active=N`, sheet testcases chỉ chứa header; không có dòng
 mẫu hoặc sheet settings. Ghép với config hiện có theo bước chuẩn bị bên dưới,
 sau đó người dùng tự nhập testcase/role/input/expected. Không coi một flow chỉ
-click/fill là testcase đã xác minh kết quả.
+click/fill là testcase đã xác minh kết quả. Compose giữ mapping sự kiện và ghi chú
+review của từng nháp; prepare chép chúng vào sheet draft_review mới, giữ ghi chú
+và testcase có sẵn của người dùng.
 
 ### Phím tắt Record (phase 18)
 

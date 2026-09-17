@@ -1,7 +1,7 @@
 """Smoke checks ONLY for isolated disposable containers with synthetic data.
 
 Run via docker exec after setting CONTAINER_SMOKE_ONLY=1 on that test container.
-No credential, external URL, dotenv, or browser is used.
+No credential, external URL or dotenv is used. Browser mode uses synthetic HTML only.
 """
 import argparse
 import io

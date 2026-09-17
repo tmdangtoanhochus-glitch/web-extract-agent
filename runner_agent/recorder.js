@@ -1,14 +1,12 @@
-// Structural locators only: do not read input values, text or attributes.
+// Structural positions and action types only; never read values, filenames or text.
 (() => {
   if (window.__runnerRecorderInstalled) return;
   window.__runnerRecorderInstalled = true;
-  let previousInput = null;
-  let hovered = null;
-  let toast = null;
-  let toastTimer = null;
+  let hovered = null, toast = null, toastTimer = null;
+  let antInput = null;
+  const seen = new WeakSet(), roots = new WeakSet();
   const send = payload => window.runnerRecordEvent(payload).then(state => {
     if (!state || !document.body) return;
-    // Fixed local status only. Never copy page text into this overlay.
     if (!toast) {
       toast = document.createElement('div');
       toast.style.cssText = 'position:fixed;top:8px;right:8px;z-index:2147483647;padding:8px;background:#172554;color:white;pointer-events:none;font:14px sans-serif';
@@ -18,62 +16,102 @@
     clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { toast?.remove(); toast = null; }, 2500);
   }).catch(() => {});
-  const locator = element => {
-    const parts = [];
-    while (element && element.nodeType === 1) {
-      const tag = element.tagName.toLowerCase();
-      if (!/^[a-z][a-z0-9-]*$/.test(tag)) return null;
-      let index = 1;
-      let sibling = element.previousElementSibling;
-      while (sibling) {
-        if (sibling.tagName === element.tagName) index++;
-        sibling = sibling.previousElementSibling;
+  const target = event => event.composedPath()[0];
+  const first = event => {
+    if (!event.isTrusted || seen.has(event)) return false;
+    seen.add(event); return true;
+  };
+  const encoded = element => {
+    const parts = window.__runnerStructuralPath(element);
+    return !parts?.length ? null : parts.length === 1 ? parts[0].css : 'runner-scope:' + JSON.stringify(parts);
+  };
+  const emit = (element, action, extra = {}) => {
+    if (!(element instanceof Element) || element === toast) return;
+    // Coalesce typing at the shared receiver: another frame may have acted meanwhile.
+    const locator = encoded(element);
+    if (locator) send({action, locator, ...extra});
+  };
+  const attach = root => {
+    if (roots.has(root)) return;
+    roots.add(root);
+    root.addEventListener('mouseover', event => {
+      if (first(event) && target(event) instanceof Element) hovered = target(event);
+    }, true);
+    root.addEventListener('keydown', event => {
+      if (!first(event) || event.repeat || !event.ctrlKey || !event.altKey) return;
+      if (!['KeyN', 'KeyP', 'KeyW', 'KeyA'].includes(event.code)) return;
+      event.preventDefault(); event.stopImmediatePropagation();
+      if (event.code === 'KeyN' || event.code === 'KeyP') {
+        send({control: event.code === 'KeyN' ? 'next_screen' : 'toggle_pause'}); return;
       }
-      parts.unshift(`${tag}:nth-of-type(${index})`);
-      element = element.parentElement;
-      if (parts.length > 40) return null;
-    }
-    return parts.join(' > ');
+      if (!hovered?.isConnected || hovered === toast) return;
+      if (event.code === 'KeyA' && (!['INPUT', 'TEXTAREA', 'SELECT'].includes(hovered.tagName) ||
+          (hovered instanceof HTMLInputElement && ['password', 'file', 'checkbox', 'radio', 'hidden'].includes(hovered.type)))) return;
+      emit(hovered, event.code === 'KeyW' ? 'wait' : 'read_result_single');
+    }, true);
+    root.addEventListener('click', event => {
+      if (!first(event)) return;
+      const element = target(event);
+      if (!(element instanceof Element)) return;
+      // Fixed component capabilities only: no class string, option text or input value is exported.
+      const option = element.closest('.ant-select-item-option');
+      if (option && antInput?.isConnected && !antInput.readOnly && !antInput.disabled) {
+        const visible = [...document.querySelectorAll('.ant-select-dropdown')].filter(e => e.getClientRects().length);
+        const related = encoded(antInput);
+        if (visible.length === 1 && visible[0].contains(option) && related) {
+          emit(option, 'click', {widget: 'antd_option', related_locator: related});
+          antInput = null; return;
+        }
+      }
+      const select = element.closest('.ant-select');
+      const candidates = select ? select.querySelectorAll('input') : [];
+      if (candidates.length === 1 && !candidates[0].readOnly && !candidates[0].disabled &&
+          !['password', 'file', 'hidden'].includes(candidates[0].type)) {
+        antInput = candidates[0];
+        emit(antInput, 'click', {widget: 'antd_select'}); return;
+      }
+      antInput = null;
+      // Input buttons have no change event: preserve the user's click as an action.
+      // Do not read their value (the visible label) or image source.
+      if (element instanceof HTMLInputElement && ['button', 'submit', 'reset', 'image'].includes(element.type)) {
+        emit(element, 'click'); return;
+      }
+      if (!(element instanceof Element) || ['INPUT', 'TEXTAREA', 'SELECT', 'OPTION', 'LABEL'].includes(element.tagName)) return;
+      if (element.closest('label')?.control instanceof HTMLInputElement) return;
+      if (element.tagName.includes('-') && !element.shadowRoot) return;
+      emit(element, 'click');
+    }, true);
+    root.addEventListener('input', event => {
+      if (!first(event)) return;
+      const element = target(event);
+      if (element instanceof HTMLInputElement && ['file', 'checkbox', 'radio', 'hidden'].includes(element.type)) return;
+      if (['INPUT', 'TEXTAREA'].includes(element.tagName)) emit(element, 'fill');
+    }, true);
+    root.addEventListener('change', event => {
+      if (!first(event)) return;
+      const element = target(event);
+      if (element instanceof HTMLInputElement) {
+        if (element.type === 'file') emit(element, 'upload');
+        if (element.type === 'checkbox') emit(element, element.checked ? 'check' : 'uncheck');
+        if (element.type === 'radio' && element.checked) emit(element, 'check');
+      } else if (element.tagName === 'SELECT') emit(element, 'select');
+    }, true);
+    const scan = node => {
+      if (node instanceof Element && node.shadowRoot) attach(node.shadowRoot);
+      for (const element of node.querySelectorAll?.('*') || []) {
+        if (element.shadowRoot) attach(element.shadowRoot);
+      }
+    };
+    new MutationObserver(records => {
+      for (const record of records) for (const node of record.addedNodes) scan(node);
+    }).observe(root, {childList: true, subtree: true});
+    scan(root);
   };
-  document.addEventListener('mouseover', event => {
-    if (event.isTrusted && event.target instanceof Element && event.target.getRootNode() === document) hovered = event.target;
-  }, true);
-  document.addEventListener('keydown', event => {
-    if (!event.isTrusted || event.repeat || window !== window.top || !event.ctrlKey || !event.altKey) return;
-    if (!['KeyN', 'KeyP', 'KeyW', 'KeyA'].includes(event.code)) return;
-    event.preventDefault();
-    event.stopImmediatePropagation();
-    previousInput = null;
-    if (event.code === 'KeyN' || event.code === 'KeyP') {
-      send({control: event.code === 'KeyN' ? 'next_screen' : 'toggle_pause'});
-      return;
-    }
-    if (!hovered || !hovered.isConnected || hovered === toast || hovered.getRootNode() !== document) return;
-    if (event.code === 'KeyA' && (!['INPUT', 'TEXTAREA', 'SELECT'].includes(hovered.tagName) ||
-        (hovered instanceof HTMLInputElement && ['password', 'file', 'checkbox', 'radio', 'hidden'].includes(hovered.type)))) return;
-    const css = locator(hovered);
-    if (css) send({action: event.code === 'KeyW' ? 'wait' : 'read_result_single', locator: css});
-  }, true);
-  const emit = (event, action) => {
-    if (!event.isTrusted || window !== window.top) return;
-    const element = event.target;
-    if (!(element instanceof Element) || element.getRootNode() !== document) return;
-    // File inputs and stateful check/radio controls require manual authoring.
-    if (element instanceof HTMLInputElement &&
-        ['file', 'checkbox', 'radio', 'hidden'].includes(element.type)) return;
-    if (action === 'click' && ['INPUT', 'TEXTAREA', 'SELECT', 'OPTION'].includes(element.tagName)) return;
-    if (action === 'fill') {
-      if (previousInput === element) return;
-      previousInput = element;
-    } else previousInput = null;
-    const css = locator(element);
-    if (css) send({action, locator: css});
+  const original = Element.prototype.attachShadow;
+  Element.prototype.attachShadow = function(options) {
+    const root = original.call(this, options);
+    if (options.mode === 'open') attach(root);
+    return root;
   };
-  document.addEventListener('click', event => emit(event, 'click'), true);
-  document.addEventListener('input', event => {
-    if (['INPUT', 'TEXTAREA'].includes(event.target.tagName)) emit(event, 'fill');
-  }, true);
-  document.addEventListener('change', event => {
-    if (event.target.tagName === 'SELECT') emit(event, 'select');
-  }, true);
+  attach(document);
 })();

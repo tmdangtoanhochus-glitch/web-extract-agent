@@ -16,13 +16,18 @@ def compose(drafts, output):
     if target.suffix.lower() != ".xlsx" or target.exists() or not 1 <= len(drafts) <= 20:
         raise ValueError("Use 1..20 drafts in execution order and a new .xlsx output")
     rows, names, screens, result_screens = [], set(), [], set()
+    source_reviews = []
     result_blocks = 1
     group_owner = {}
     sources = [(Path(path), read_workbook(path)) for path in drafts]
-    for _, content in sources:
+    for source_index, (_, content) in enumerate(sources, 1):
         validate_workbook(content, require_settings=False)
         wb = load_workbook(io.BytesIO(content), read_only=True, keep_links=False)
         try:
+            if "review" in wb.sheetnames:
+                for note in wb["review"].iter_rows(min_row=2, values_only=True):
+                    if any(value is not None for value in note):
+                        source_reviews.append((f"draft_{source_index}", " | ".join(str(value or "") for value in note)))
             if "settings" in wb.sheetnames:
                 raise ValueError("Use generated drafts without settings; user config belongs in prepare_runner")
             raw = list(wb["steps"].values)
@@ -62,6 +67,17 @@ def compose(drafts, output):
     if len(rows) > 2000 or len(result_screens) > 1 or data & (set(BASE_CASE_COLUMNS) | expected):
         raise ValueError("Draft exceeds executor limits or has conflicting testcase columns")
     result = _workbook(rows, result_blocks=result_blocks)
+    if source_reviews:
+        combined = load_workbook(io.BytesIO(result), keep_links=False)
+        try:
+            for note in source_reviews:
+                combined["review"].append(note)
+            buffer = io.BytesIO()
+            combined.save(buffer)
+            result = buffer.getvalue()
+        finally:
+            combined.close()
+        validate_workbook(result, require_settings=False)
     if any(read_workbook(path) != content for path, content in sources):
         raise ValueError("A draft changed while composing")
     with target.open("xb") as file:

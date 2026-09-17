@@ -42,6 +42,25 @@ def test_generation_only_creates_steps_and_testcase_headers():
     wb.close()
 
 
+def test_prepare_preserves_compiler_review_without_overwriting_user_notes():
+    from runner_agent.authoring import _workbook
+    source = load_workbook(io.BytesIO(template()))
+    source.create_sheet("draft_review").append(["original user note"])
+    saved = io.BytesIO()
+    source.save(saved)
+    source.close()
+    draft = _workbook([step.model_dump() for step in plan().steps], compilation_notes=[
+        {"step": "cif", "events": [1, 2], "review": "REVIEW_LOCATOR"}])
+    result = load_workbook(io.BytesIO(merge(saved.getvalue(), draft)))
+    try:
+        assert result["draft_review"].cell(1, 1).value == "original user note"
+        assert any("events=1,2; REVIEW_LOCATOR" in str(row) for row in result["draft_review1"].values)
+        assert result["testcases"].cell(2, 6).value == "KEEP_ME"
+        assert all(row[6] == "N" for row in list(result["steps"].values)[1:])
+    finally:
+        result.close()
+
+
 @pytest.mark.parametrize("key,value", [("settings", {}), ("testcases", []), ("testcases", [{"tc_id": "FAKE"}])])
 def test_model_cannot_generate_settings_or_any_testcases(key, value):
     with pytest.raises(ValidationError):

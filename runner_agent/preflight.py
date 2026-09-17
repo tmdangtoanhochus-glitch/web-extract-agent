@@ -4,6 +4,7 @@ from urllib.parse import urlsplit
 from openpyxl import load_workbook
 from .config import validate_workbook
 from src.runner.workbook_schema import BASE_CASE_COLUMNS, READ_ACTIONS, WorkbookStep
+from src.runner.scoped_locator import PREFIX, decode
 
 VALID_ACTIONS = set(WorkbookStep.model_fields["action"].annotation.__args__)
 VALID_LOCATOR_TYPES = {"css", "xpath", "role", "text", "label", "filter", "form_item", "nth", "role_nth", ""}
@@ -49,6 +50,14 @@ def check(content):
             issues.append({"sheet": "testcases", "code": "ENTER_AND_ACTIVATE_USER_TESTCASES"})
         flow = {s.strip() for s in settings.get("screen_flow", "").split(",") if s.strip()}
         for row, step in active_steps:
+            for key in ("locator", "wait_selector"):
+                if step[key].startswith(PREFIX):
+                    try:
+                        decode(step[key])
+                    except (ValueError, TypeError):
+                        issues.append({"sheet": "steps", "row": row, "code": "UNRESOLVED_LOCATOR"})
+            if step["action"].lower() == "upload" and step["value_source"].lower() != "testcase":
+                issues.append({"sheet": "steps", "row": row, "code": "INVALID_VALUE_SOURCE"})
             step["action"] = step["action"].lower()
             if step["action"] not in VALID_ACTIONS:
                 issues.append({"sheet": "steps", "row": row, "code": "INVALID_ACTION"})

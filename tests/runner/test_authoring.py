@@ -11,7 +11,7 @@ from runner_agent.config import validate_workbook
     {"action": "fill", "locator": "input:nth-of-type(1)", "value": "synthetic-private"},
     {"action": "click", "locator": "[value='synthetic-private']"},
     {"action": "click", "locator": "=HYPERLINK(1)"},
-    {"action": "upload", "locator": "input:nth-of-type(1)"},
+    {"action": "drag", "locator": "input:nth-of-type(1)"},
     {"action": "fill", "locator": "input:nth-of-type(0)"},
     {"action": "click", "locator": 42},
     None,
@@ -116,7 +116,7 @@ def test_recorder_does_not_overwrite_existing_output(tmp_path):
     assert path.read_bytes() == b"existing"
 
 
-def test_record_session_exports_only_main_frame_events(tmp_path, monkeypatch):
+def test_record_session_rejects_unresolvable_frame_and_keeps_main_events(tmp_path, monkeypatch):
     from types import SimpleNamespace
     import playwright.sync_api
     from record_runner import record

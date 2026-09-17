@@ -2,6 +2,57 @@
 
 ## Runner integration — cập nhật 2026-09-17
 
+### Bổ sung kiểm chứng phase 26–27: giữ thao tác nhập xen giữa các frame
+- Sửa bộ lọc fill trong từng document có thể bỏ lần nhập tiếp theo vào cùng ô,
+  khi giữa hai lần nhập có thao tác ở frame khác. JS gửi sự kiện cấu trúc về bộ
+  nhận chung; chỉ gộp fill liên tiếp cùng locator/screen tại đó, không đọc giá trị.
+- Pause/resume, chuyển screen và thao tác xen giữa kết thúc chuỗi gõ. Gõ tiếp
+  trong chuỗi hiện tại không làm tăng số event hoặc báo dropped khi đạt giới hạn.
+- Bổ sung regression về thứ tự qua scope, pause/screen, giới hạn; đối chiếu JSON
+  và workbook xuất cùng sự kiện sau khi gộp. Cập nhật quyết định trong thiết kế V2.
+- **562 test toàn bộ suite offline pass**, một warning Starlette/AnyIO có sẵn;
+  bao gồm bản sửa nút input trước đó. Chưa browser/AI runtime thật; không đổi crawler.
+
+### Bổ sung kiểm chứng phase 26–27: không bỏ sót nút input
+- Sửa Recorder bỏ qua click trên input type button/submit/reset/image. Ghi action
+  click bằng locator cấu trúc, không đọc label/value/src; vẫn bỏ click của ô nhập,
+  checkbox/radio/file để không tạo thao tác trùng với input/change.
+- DOM test kiểm tra trang chính và shadow mở, dedupe giữa các root, bỏ event giả.
+  Test compiler kiểm tra giữ hai lần bấm thành hai steps inactive riêng, không
+  tạo cột dữ liệu cho nút bấm hoặc sinh testcase/settings.
+- Kiểm chứng: **41 test liên quan pass, 518 deselected**; một warning Starlette/AnyIO
+  có sẵn. Baseline toàn bộ suite trước bản sửa: 558 pass; chưa chạy lại toàn bộ
+  suite hoặc browser thật cho bản sửa này. Không thay kiến trúc hay code crawler.
+
+### Phase 27: AI biên dịch recording theo contract Runner
+- Chốt lại phạm vi theo người dùng: người dùng thao tác Inspector/Recorder; AI
+  chuẩn hóa flow thành steps, không tự điều hướng/thực thi nghiệp vụ.
+- Thêm JSON recording được kiểm tra theo schema đóng; UI yêu cầu rà metadata trước
+  khi gửi endpoint /runner/authoring/recording có đăng nhập. Không persist trace;
+  audit chỉ event/user/time, response no-store; đổi đầu vào hoặc logout xóa draft.
+- AI đặt tên step và đề xuất gộp; compiler đối chiếu mọi event đúng một lần/đúng
+  thứ tự/screen, ràng buộc action/value_source/locator/wait/read_method theo Runner.
+  Gộp fill liên tiếp hoặc Ant Design có bằng chứng thành select_antd thay vì chép click.
+- Selector lấy từ recording, không từ AI. Thiếu bằng chứng thì review/placeholder;
+  không tự đoán group, account, prefill hoặc expected. Sheet review ghi event nguồn.
+  Steps inactive, testcase chỉ header, settings vẫn qua prepare và duyệt từng mục.
+- Compose giữ review/mapping nguồn từng draft; prepare sao chép review vào sheet
+  draft_review mới, không ghi đè ghi chú có sẵn hoặc testcase của người dùng.
+- Bằng chứng widget chỉ enum và locator liên quan, không class string/text/value/file.
+  Ant Design trong iframe/shadow chưa gộp tự động; nhóm lặp cần rà soát thủ công.
+- Kiểm chứng cuối phase 26–27: **558 test offline pass**, một warning deprecation
+  Starlette/AnyIO có sẵn. AI HTTP/browser giả lập và DOM tổng hợp; chưa nghiệm thu
+  model/website thật. Docker tiếp tục tạm để lại theo yêu cầu người dùng.
+
+### Phase 26: recorder có scope và điều khiển bổ sung
+- Ghi iframe/shadow DOM mở bằng scope cấu trúc; frame ancestry lấy local, không URL.
+  Dedupe event qua shadow root, bỏ event giả/detached frame, không thu giá trị/file.
+- Thêm check/uncheck/upload; upload chỉ sinh header để người dùng tự nhập đường dẫn.
+  Executor bổ sung uncheck/upload và resolve scope cho thao tác/wait/đọc input.
+  Không đổi đường thực thi crawler, không sửa CLAUDE.md.
+- Test offline có DOM JavaScript tổng hợp, scope lồng nhau, chặn upload credential,
+  và workbook inactive/header-only. Browser/website thật chưa nghiệm thu.
+
 ### Phase 23: chốt roadmap MVP và bằng chứng nghiệm thu
 - Thêm docs/RUNNER_ROADMAP.md đối chiếu bốn giai đoạn MVP trong V2 với các
   phase triển khai, phạm vi chốt và tiêu chí hoàn tất phase 23–25.
@@ -21,10 +72,24 @@
   khi đánh dấu container thử, không dùng secret hoặc mạng ngoài; có ca workbook
   chỉ header, phân quyền Runner, SQLite persistence và Chromium HTML tổng hợp.
 - Docker local 29.8.0, cấu hình client rỗng riêng. Image UI build thành công;
-  API đang kiểm chứng. Không dùng compose mặc định hoặc mount dữ liệu thật.
+  API build gián đoạn khi Docker daemon không còn truy cập được lúc tải Chromium;
+  chưa xác nhận image hoàn tất. Không dùng compose mặc định hoặc mount dữ liệu thật.
 - Regression: **513 test offline pass**, một warning Starlette/AnyIO có sẵn;
   3 test context chạy lại đạt sau cập nhật danh sách source.
 - Checklist triển khai/UAT và nơi ghi bằng chứng đã có. Phase 24–25 chưa hoàn tất.
+
+### Phase 25: diễn tập nghiệm thu offline — chưa UAT thật
+- Theo yêu cầu người dùng, tạm để lại Docker khi engine không còn hoạt động;
+  tiếp tục phần offline, không đánh dấu phase 24 hoàn tất.
+- Thêm hai ca test_mvp_restart dùng lifecycle FastAPI đầy đủ, SQLite tạm đóng/mở
+  lại, fetch/AI giả lập và clock Runner cố định. Xác minh dữ liệu crawl/dedup,
+  kết quả và summary Runner còn sau restart, ownership và login vẫn có hiệu lực.
+- Xác minh báo lỗi TypeError giữ metadata qua restart mà không chứa exception/query
+  riêng tư; lỗi crawl không làm mất trạng thái run, run đang chạy không bị claim lại.
+- Hai ca mới pass; đây là diễn tập offline, không thay thế container volume,
+  browser/executor thật hoặc UAT GreenNode. Không đổi code crawler/CLAUDE.md.
+- Regression cuối lượt: **515 test offline pass**, một warning Starlette/AnyIO
+  có sẵn. Phase 25 chỉ hoàn tất phần diễn tập offline, còn nghiệm thu thực tế.
 
 ### Phase 22: chẩn đoán journal local chỉ đọc
 - Thêm `--journal-status`, tùy chọn `--run-id`: chạy trước luồng token/agent/API,

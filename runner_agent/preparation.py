@@ -87,6 +87,12 @@ def merge(template_content, draft_content, approved_keys=()):
         draft = load_workbook(io.BytesIO(draft_content), read_only=True, keep_links=False)
         try:
             draft_headers = list(next(draft["testcases"].values))
+            # Keep compiler evidence/review alongside prepared steps, without replacing user notes.
+            if "review" in draft.sheetnames:
+                imported_review = wb.create_sheet("draft_review")
+                for row in draft["review"].iter_rows(values_only=True):
+                    imported_review.append(row)
+                imported_review.freeze_panes = "A2"
         finally:
             draft.close()
         for key in draft_headers:

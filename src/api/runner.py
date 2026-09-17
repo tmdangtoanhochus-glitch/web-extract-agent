@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from ..runner.service import RunnerError, TERMINAL, digest, safe_path
 from ..runner.preflight_contract import PreflightReport
 from ..runner.discovery import Snapshot, RepairProposal
+from ..runner.recording_plan import RecordingTrace
 
 
 class StrictModel(BaseModel):
@@ -55,6 +56,10 @@ class Discover(Describe):
     snapshot: Snapshot
 
 
+class CompileRecording(Describe):
+    recording: RecordingTrace
+
+
 class RepairRequest(Discover):
     action: Literal["fill", "force_fill", "fill_enter", "select", "click", "click_if_exists", "read_result_single"]
     read_method: Literal["", "css_input", "css_disabled"] = ""
@@ -85,7 +90,7 @@ def create_runner_router(service, planner=None):
 
     @router.get("/authoring/capabilities")
     def authoring_capabilities(u=Depends(user)):
-        return {"describe": planner is not None, "inspector": False, "local_inspector": True,
+        return {"describe": planner is not None, "recording": planner is not None, "inspector": False, "local_inspector": True,
                 "local_repair": True, "repair": planner is not None, "discovery": planner is not None}
 
     def candidate_request(req, u, repairing=False):
@@ -123,6 +128,30 @@ def create_runner_router(service, planner=None):
     @router.post("/authoring/repair")
     def repair(req: RepairRequest, u=Depends(user)):
         return candidate_request(req, u, repairing=True)
+
+    @router.post("/authoring/recording")
+    def compile_recording(req: CompileRecording, u=Depends(user)):
+        if planner is None:
+            raise HTTPException(503, "AI chuẩn hóa bản ghi chưa được bật.")
+        from ..runner.planner import PlanError
+        from runner_agent.authoring import _workbook
+        if not planning_slots.acquire(blocking=False):
+            raise HTTPException(429, "Đang có yêu cầu tạo nháp; thử lại sau.")
+        try:
+            plan = planner.recording(req.description, req.recording)
+            rows, notes = plan.bind(req.recording)
+            content = _workbook(rows, dropped=req.recording.dropped,
+                                result_blocks=req.result_blocks, compilation_notes=notes)
+            with repo.transaction():
+                service.audit("RECORDING_DRAFT_COMPILED", u["id"])
+            return Response(content, media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                            headers={"Cache-Control": "no-store", "Content-Disposition": 'attachment; filename="Runner_Compiled_Draft.xlsx"'})
+        except PlanError as exc:
+            raise HTTPException(422, str(exc)) from None
+        except ValueError:
+            raise HTTPException(422, "Bản chuẩn hóa không khớp recording hoặc contract Runner.") from None
+        finally:
+            planning_slots.release()
 
     @router.post("/authoring/describe")
     def describe(req: Describe, u=Depends(user)):

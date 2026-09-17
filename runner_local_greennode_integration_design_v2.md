@@ -2,6 +2,30 @@
 
 ## Trạng thái triển khai và quyết định bổ sung (cập nhật 2026-09-17)
 
+### Phase 26–27: Inspector/Recorder do người dùng thao tác, AI biên dịch cấu hình
+
+Yêu cầu đã làm rõ: không phát triển AI tự điều hướng hoặc self-healing tự thực thi
+nghiệp vụ. Người dùng thao tác local, AI nhận recording cấu trúc đã rà soát và biên
+dịch thành workbook phù hợp Runner. Quyết định này thay phạm vi autonomous nêu
+trong roadmap đích cũ bên dưới; Runner execution vẫn deterministic theo cấu hình.
+
+Recorder xuất JSON tùy chọn (tối đa 500 events), schema đóng với action, screen,
+structural locator, enum widget và related locator. Không thu DOM text, URL, input,
+filename hay nội dung file. Metadata widget chỉ phản ánh capability đã nhận diện,
+không xuất giá trị attribute. Iframe/shadow mở dùng scope; shadow đóng không hỗ trợ.
+Các lần gõ liên tiếp cùng locator/screen được gộp tại bộ nhận sự kiện local dùng
+chung cho các frame, không gộp riêng trong từng document. Thao tác xen giữa ở frame
+khác, pause/resume hoặc chuyển screen kết thúc chuỗi gõ; lần nhập sau vẫn được ghi.
+Giới hạn 500 tính trên các sự kiện sau khi gộp, JSON và workbook thô cùng thứ tự.
+
+Endpoint /runner/authoring/recording yêu cầu Runner login và xác nhận rà soát.
+AI chỉ đề xuất tên/action và nhóm event; compiler ràng buộc tất cả event đúng thứ
+tự, không bỏ click, tự thêm thao tác hoặc tự sinh testcase/settings. Native select
+giữ select; Ant Design đủ bằng chứng được gộp select_antd với input ở DOM chính.
+Read/wait cần event rõ ràng. Account, repeat group và control chưa đủ bằng chứng
+cần rà soát, không đoán. Workbook ghi mapping nguồn/cảnh báo trong review; active=N.
+Không persist recording ở backend. UI bỏ draft/xác nhận cũ khi thay đầu vào/logout.
+
 ### Phase 23–25: chốt phạm vi và nghiệm thu
 
 docs/RUNNER_ROADMAP.md đối chiếu MVP gốc với các phase triển khai và là bảng
@@ -15,6 +39,11 @@ ready 200 khi Streamlit chạy, 502 khi chỉ nginx chạy. Build dùng context 
 riêng, không copy workspace/state/credential, có manifest SHA-256; xem
 docs/RUNNER_CONTAINER_SMOKE.md. Kết quả API/persistence/browser ghi riêng theo ca,
 không suy ra GreenNode hoặc UAT đã đạt từ kết quả local.
+
+Phase 25 đã có diễn tập restart offline: lifecycle FastAPI đầy đủ, SQLite tạm
+đóng/mở lại, kiểm tra crawl/dedup, Runner summary/ownership và báo lỗi đã lọc.
+Docker API tạm để lại theo yêu cầu người dùng sau gián đoạn engine. Bằng chứng
+offline không thay đổi các điều kiện nghiệm thu môi trường thật trong roadmap.
 
 ### Phase 22: chẩn đoán journal không có side effect
 
