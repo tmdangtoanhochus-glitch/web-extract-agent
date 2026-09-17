@@ -34,7 +34,7 @@ class _FakeAIClient(AIClient):
     def extract(self, markdown: str, field_descriptions: dict[str, str]) -> ExtractionResult:
         self.calls += 1
         return ExtractionResult(
-            fields={name: FieldExtraction(value="v", confidence=0.9, evidence="e") for name in field_descriptions},
+            records=[{name: FieldExtraction(value="v", confidence=0.9, evidence="e") for name in field_descriptions}],
             success=True,
         )
 

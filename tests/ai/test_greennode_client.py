@@ -33,6 +33,8 @@ def _make_client(handler, base_url: str = _BASE_URL, **kwargs) -> GreenNodeChatC
 
 
 def test_extract_parses_clean_json_response():
+    """Response dạng 1 object đơn (không phải array) vẫn phải hoạt động được
+    — backward compat, xem `ExtractionResult.fields` (trả record đầu tiên)."""
     ai_json = {
         "price": {"value": 75000000, "confidence": 0.95, "evidence": "giá 75.000.000 đồng"},
         "date": {"value": "2026-09-11", "confidence": 0.8, "evidence": "ngày 11/09/2026"},
@@ -52,6 +54,27 @@ def test_extract_parses_clean_json_response():
     assert result.fields["date"].value == "2026-09-11"
 
 
+def test_extract_parses_json_array_with_multiple_records():
+    """Trang có nhiều bản ghi (vd. nhiều quote/sách) — AI trả về JSON array,
+    mỗi phần tử 1 record — phải lưu được tất cả, không chỉ record đầu."""
+    ai_json = [
+        {"quote": {"value": "Quote A", "confidence": 0.9, "evidence": "e1"}},
+        {"quote": {"value": "Quote B", "confidence": 0.85, "evidence": "e2"}},
+        {"quote": {"value": "Quote C", "confidence": 0.8, "evidence": "e3"}},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_openai_response(json.dumps(ai_json)))
+
+    client = _make_client(handler)
+    result = client.extract("nội dung", {"quote": "câu trích dẫn"})
+
+    assert result.success is True
+    assert len(result.records) == 3
+    assert [r["quote"].value for r in result.records] == ["Quote A", "Quote B", "Quote C"]
+    assert result.fields["quote"].value == "Quote A"  # backward compat: record đầu
+
+
 def test_extract_handles_json_wrapped_in_extra_text_or_markdown_fence():
     ai_json = {"price": {"value": 100, "confidence": 0.5, "evidence": "e"}}
     wrapped = f"Đây là kết quả:\n```json\n{json.dumps(ai_json)}\n```\nHết."
@@ -64,6 +87,27 @@ def test_extract_handles_json_wrapped_in_extra_text_or_markdown_fence():
 
     assert result.success is True
     assert result.fields["price"].value == 100
+
+
+def test_extract_repairs_truncated_json_array_response():
+    """Response bị cắt giữa chừng do max_tokens (thường gặp khi trang có
+    nhiều bản ghi) — phải repair được thay vì fail toàn bộ, giữ lại các
+    record đã hoàn chỉnh trước điểm bị cắt."""
+    truncated = (
+        '[{"price": {"value": 1, "confidence": 0.9, "evidence": "e1"}}, '
+        '{"price": {"value": 2, "confidence": 0.8, "evidence": "e2"}}, '
+        '{"price": {"value": 3, "confidence": 0.7, "ev'  # bị cắt dở dang
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_openai_response(truncated))
+
+    client = _make_client(handler)
+    result = client.extract("nội dung", {"price": "giá"})
+
+    assert result.success is True
+    assert len(result.records) == 2
+    assert [r["price"].value for r in result.records] == [1, 2]
 
 
 def test_extract_missing_field_in_response_defaults_to_zero_confidence():

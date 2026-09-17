@@ -83,11 +83,11 @@ def test_length_fields_are_populated():
 
 
 def test_div_span_layout_content_is_not_lost_when_page_also_has_unrelated_heading():
-    """Tái hiện bug thật gặp phải với quotes.toscrape.com: nội dung chính nằm
-    trong div/span (không có <p> bao quanh), nhưng trang có sẵn <h1>/<p> khác
-    KHÔNG liên quan (vd. tiêu đề trang, link "Login") ở chỗ khác. Trước đây
-    code coi "đã tìm thấy heading/p nào đó" là đủ và bỏ qua toàn bộ div/span,
-    khiến AI nhận markdown gần như rỗng dù trang có đầy đủ dữ liệu."""
+    """Regression cho bug docs/kien_audit/02 (2 người độc lập tìm ra cùng lúc):
+    nội dung chính nằm trong div/span (không có <p> bao quanh), nhưng trang có
+    sẵn <h1>/<p> khác KHÔNG liên quan (vd. tiêu đề trang, link "Login") ở chỗ
+    khác. Trước fix, code coi "đã tìm thấy heading/p nào đó" là đủ và bỏ qua
+    toàn bộ div/span, khiến AI nhận markdown gần như rỗng."""
     html = """
     <html><body>
       <h1>Quotes to Scrape</h1>
@@ -104,6 +104,24 @@ def test_div_span_layout_content_is_not_lost_when_page_also_has_unrelated_headin
     assert "Đời là bể khổ" in doc.markdown
     assert "Albert Einstein" in doc.markdown
     assert "change" in doc.markdown
+
+
+def test_repeated_div_items_stay_separated_not_merged_into_one_line():
+    """Nhiều mục lặp lại kiểu <div class="quote"> liên tiếp (trang danh sách)
+    phải tách dòng riêng — không dính chung 1 dòng, để AI phân biệt được từng
+    mục khi trích xuất multi-record."""
+    html = """
+    <html><body>
+      <div class="quote"><span>Quote A</span></div>
+      <div class="quote"><span>Quote B</span></div>
+    </body></html>
+    """
+    doc = clean_html(html)
+
+    assert "Quote A" in doc.markdown
+    assert "Quote B" in doc.markdown
+    lines = [line for line in doc.markdown.split("\n\n") if line.strip()]
+    assert any("Quote A" in line and "Quote B" not in line for line in lines)
 
 
 def test_empty_html_does_not_crash():

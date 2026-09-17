@@ -14,6 +14,11 @@ phần "trích xuất" giống hệt nhau bất kể lưu vào đâu, chỉ bư�
 nhánh. Chỉ code (rule-based) quyết định: dùng dataset nào, có lưu record mới
 hay không, field nào lấy được từ structured data/cache hay phải hỏi AI. AI CHỈ
 trích xuất giá trị field — không tự quyết định các việc đó (CLAUDE.md mục 1).
+
+1 URL có thể chứa NHIỀU bản ghi (vd. trang danh sách 10 quote/20 sách) — AI
+trả về `records: list[dict[str, FieldExtraction]]` (xem `src/ai/base.py`),
+`ai_extract()` gộp structured-data/cache vào TỪNG record, cả `run_crawl_job()`
+và `run_file_crawl_job()` lưu/ghi TẤT CẢ record chứ không chỉ record đầu.
 """
 from __future__ import annotations
 
@@ -41,6 +46,7 @@ class PipelineResult:
     status: str  # "saved" | "unchanged" | "fetch_failed" | "extract_failed"
     dataset: Optional[Dataset] = None
     record: Optional[Record] = None
+    record_count: int = 0
     detail: Optional[str] = None
 
 
@@ -51,6 +57,7 @@ class FileCrawlResult:
     data: Optional[dict[str, Any]] = None
     confidence: Optional[float] = None
     needs_review: bool = False
+    record_count: int = 0
     detail: Optional[str] = None
 
 
@@ -68,7 +75,7 @@ class FetchAndClean:
 
 @dataclass(frozen=True)
 class AiExtractResult:
-    fields: dict[str, FieldExtraction] = field(default_factory=dict)
+    records: list[dict[str, FieldExtraction]] = field(default_factory=list)
     success: bool = True
     error: Optional[str] = None
 
@@ -106,7 +113,10 @@ def ai_extract(
 ) -> AiExtractResult:
     """Trích xuất field theo thứ tự ưu tiên: structured data (JSON-LD/Open
     Graph, CLAUDE.md mục 2) → cache chiến lược theo domain (CLAUDE.md mục 5)
-    → AI cho field còn lại. Dùng chung cho cả luồng DB và luồng file."""
+    → AI cho field còn lại. Dùng chung cho cả luồng DB và luồng file.
+
+    Trang có thể có NHIỀU bản ghi — `resolved_fields` (structured data/cache,
+    áp dụng chung cho cả trang) được gộp vào TỪNG record AI trả về."""
     logger.info("[%s] Bắt đầu trích xuất %d field: %s", url, len(field_descriptions), list(field_descriptions))
     structured = extract_structured_data(html)
     domain = domain_of(url)
@@ -125,6 +135,12 @@ def ai_extract(
         # Cache chiến lược extract theo domain (CLAUDE.md mục 5): field đã
         # từng được AI định vị trên domain này thì áp lại selector rule-based
         # trước — chỉ gọi AI lại khi selector không còn khớp (site đổi cấu trúc).
+        # LƯU Ý: cache chỉ áp dụng đúng cho trang 1-record — trang nhiều record
+        # (nhiều <div class="quote"> lặp lại) mà có cache sẽ chỉ khớp ĐÚNG 1
+        # phần tử (selector cố định vị trí), khiến field đó bị "khoá" về 1 giá
+        # trị duy nhất thay vì để AI trả đủ N giá trị theo N record. Đây là
+        # giới hạn đã biết (xem docs/kien_audit/03 mục 6.1) — workaround: xoá
+        # cache (đổi dataset mới) nếu trang trước đó từng cào dạng 1-record.
         cached_strategy = storage.get_extraction_strategy(domain, name)
         cached_value = (
             apply_selector(html, cached_strategy.selector) if cached_strategy is not None else None
@@ -156,28 +172,36 @@ def ai_extract(
         extraction = ai_client.extract(markdown, remaining_descriptions)
         if not extraction.success:
             logger.warning("[%s] AI extract thất bại: %s", url, extraction.error)
-            return AiExtractResult(fields=resolved_fields, success=False, error=extraction.error)
-        logger.info(
-            "[%s] AI trả về xong — confidence từng field: %s",
-            url, {name: fe.confidence for name, fe in extraction.fields.items()},
-        )
-        resolved_fields.update(extraction.fields)
+            return AiExtractResult(records=[resolved_fields], success=False, error=extraction.error)
 
-        # AI vừa định vị được field mới (hoặc định vị lại field cache cũ đã
-        # fail) — suy ra selector rồi lưu/ghi đè cache cho lần cào sau.
-        for name, fe in extraction.fields.items():
-            if fe.value in (None, ""):
-                continue
-            selector = find_selector(html, fe.value)
-            if selector is not None:
-                storage.save_extraction_strategy(domain, name, selector, sample_value=str(fe.value))
+        # AI trả về array các record — gộp resolved_fields (structured data/cache,
+        # dùng chung cho cả trang) vào MỖI record.
+        all_records: list[dict[str, FieldExtraction]] = [
+            {**resolved_fields, **ai_fields} for ai_fields in extraction.records
+        ]
+        logger.info(
+            "[%s] AI trả về %d bản ghi — confidence trung bình từng field của bản ghi đầu: %s",
+            url, len(all_records),
+            {name: fe.confidence for name, fe in all_records[0].items()} if all_records else {},
+        )
+
+        # Cache selector cho field AI vừa định vị (dùng record đầu tiên —
+        # xem lưu ý về giới hạn cache ở trên).
+        if all_records:
+            for name, fe in all_records[0].items():
+                if fe.value in (None, ""):
+                    continue
+                selector = find_selector(html, fe.value)
+                if selector is not None:
+                    storage.save_extraction_strategy(domain, name, selector, sample_value=str(fe.value))
     else:
         logger.info(
             "Toàn bộ field của %s lấy được từ structured data/cache — bỏ qua AI.",
             url,
         )
+        all_records = [resolved_fields]
 
-    return AiExtractResult(fields=resolved_fields, success=True)
+    return AiExtractResult(records=all_records, success=True)
 
 
 def _apply_image_downloads(
@@ -222,7 +246,8 @@ def run_crawl_job(
     image_fields: Optional[list[str]] = None,
     images_root: Path = IMAGES_ROOT,
 ) -> PipelineResult:
-    """Crawl 1 URL và lưu kết quả vào DB.
+    """Crawl 1 URL và lưu kết quả vào DB — có thể lưu NHIỀU record nếu trang
+    có nhiều bản ghi (`extraction.records`, xem `ai_extract()`).
 
     - Truyền `dataset_id`: thêm URL này làm source của dataset đã có (người
       dùng đã xác nhận tường minh muốn gộp vào dataset đó). `field_descriptions`
@@ -271,27 +296,37 @@ def run_crawl_job(
     if not extraction.success:
         return PipelineResult(status="extract_failed", dataset=dataset, detail=extraction.error)
 
-    data = {name: fe.value for name, fe in extraction.fields.items()}
-    if image_fields:
-        data = _apply_image_downloads(data, image_fields, record_key=dataset.dataset_id, images_root=images_root)
-    evidence = {name: fe.evidence for name, fe in extraction.fields.items() if fe.evidence}
-    confidences = [fe.confidence for fe in extraction.fields.values()]
-    overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+    saved_records: list[Record] = []
+    for index, fields in enumerate(extraction.records):
+        data = {name: fe.value for name, fe in fields.items()}
+        if image_fields:
+            data = _apply_image_downloads(
+                data, image_fields, record_key=f"{dataset.dataset_id}_{index}", images_root=images_root
+            )
+        evidence = {name: fe.evidence for name, fe in fields.items() if fe.evidence}
+        confidences = [fe.confidence for fe in fields.values()]
+        overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
 
-    record = storage.save_record(
-        dataset_id=dataset.dataset_id,
-        source_url=url,
-        data=data,
-        content_hash=fac.content_hash,
-        evidence=evidence,
-        confidence=overall_confidence,
-        needs_review=overall_confidence < confidence_threshold,
-    )
+        record = storage.save_record(
+            dataset_id=dataset.dataset_id,
+            source_url=url,
+            data=data,
+            content_hash=fac.content_hash,
+            evidence=evidence,
+            confidence=overall_confidence,
+            needs_review=overall_confidence < confidence_threshold,
+        )
+        saved_records.append(record)
+
     logger.info(
-        "[%s] Đã lưu record %s vào dataset %s (confidence=%.2f, needs_review=%s).",
-        url, record.record_id, dataset.dataset_id, overall_confidence, record.needs_review,
+        "[%s] Đã lưu %d record vào dataset %s.", url, len(saved_records), dataset.dataset_id,
     )
-    return PipelineResult(status="saved", dataset=dataset, record=record)
+    return PipelineResult(
+        status="saved",
+        dataset=dataset,
+        record=saved_records[0] if saved_records else None,
+        record_count=len(saved_records),
+    )
 
 
 def run_file_crawl_job(
@@ -308,12 +343,13 @@ def run_file_crawl_job(
     image_fields: Optional[list[str]] = None,
     images_root: Path = IMAGES_ROOT,
 ) -> FileCrawlResult:
-    """Crawl 1 URL và ghi kết quả ra file JSON (`src/storage/file_writer.py`)
-    — KHÔNG dedup theo content_hash, KHÔNG schema-match, KHÔNG tạo dataset
-    (đối lập có chủ đích với `run_crawl_job()`). `storage` vẫn cần truyền vào
-    vì `ai_extract()` dùng nó để đọc/ghi cache chiến lược theo domain
-    (CLAUDE.md mục 5) — cache này độc lập với dataset/records, dùng chung
-    được cho cả 2 luồng.
+    """Crawl 1 URL và ghi kết quả ra file (`src/storage/file_writer.py`,
+    JSON/CSV/XLSX/Parquet theo đuôi file) — KHÔNG dedup theo content_hash,
+    KHÔNG schema-match, KHÔNG tạo dataset (đối lập có chủ đích với
+    `run_crawl_job()`). Có thể ghi NHIỀU record nếu trang có nhiều bản ghi.
+    `storage` vẫn cần truyền vào vì `ai_extract()` dùng nó để đọc/ghi cache
+    chiến lược theo domain (CLAUDE.md mục 5) — cache này độc lập với
+    dataset/records, dùng chung được cho cả 2 luồng.
 
     `confidence_threshold`: giống `run_crawl_job()` — chỉ gắn cờ `needs_review`
     trong record ghi ra file, KHÔNG chặn ghi."""
@@ -326,44 +362,56 @@ def run_file_crawl_job(
     if not extraction.success:
         return FileCrawlResult(status="extract_failed", detail=extraction.error)
 
-    data = {name: fe.value for name, fe in extraction.fields.items()}
-    if image_fields:
-        data = _apply_image_downloads(data, image_fields, record_key=domain_of(url), images_root=images_root)
-    evidence = {name: fe.evidence for name, fe in extraction.fields.items() if fe.evidence}
-    confidences = [fe.confidence for fe in extraction.fields.values()]
-    overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
-    needs_review = overall_confidence < confidence_threshold
+    first_data: Optional[dict[str, Any]] = None
+    first_confidence: Optional[float] = None
+    first_needs_review = False
+    write_result = None
 
-    record = {
-        "source_url": url,
-        "data": data,
-        "evidence": evidence,
-        "confidence": overall_confidence,
-        "needs_review": needs_review,
-        "crawled_at": datetime.now(timezone.utc).isoformat(),
-    }
+    for index, fields in enumerate(extraction.records):
+        data = {name: fe.value for name, fe in fields.items()}
+        if image_fields:
+            data = _apply_image_downloads(
+                data, image_fields, record_key=f"{domain_of(url)}_{index}", images_root=images_root
+            )
+        confidences = [fe.confidence for fe in fields.values()]
+        overall_confidence = sum(confidences) / len(confidences) if confidences else 0.0
+        needs_review = overall_confidence < confidence_threshold
 
-    try:
-        write_result = write_record(
-            file_path=file_path,
-            record=record,
-            write_mode=write_mode,
-            key_field=key_field,
-            field_names=list(field_descriptions.keys()),
-            exports_root=exports_root,
-        )
-    except (InvalidFilePathError, InvalidKeyFieldError) as exc:
-        logger.warning("Cấu hình file không hợp lệ cho %s: %s", url, exc)
-        return FileCrawlResult(status="invalid_file_config", detail=str(exc))
+        record = {
+            **data,
+            "source_url": url,
+            "confidence": overall_confidence,
+            "needs_review": needs_review,
+            "crawled_at": datetime.now(timezone.utc).isoformat(),
+        }
+
+        try:
+            write_result = write_record(
+                file_path=file_path,
+                record=record,
+                write_mode=write_mode,
+                key_field=key_field,
+                field_names=list(field_descriptions.keys()),
+                exports_root=exports_root,
+            )
+        except (InvalidFilePathError, InvalidKeyFieldError) as exc:
+            logger.warning("Cấu hình file không hợp lệ cho %s: %s", url, exc)
+            return FileCrawlResult(status="invalid_file_config", detail=str(exc))
+
+        if first_data is None:
+            first_data = data
+            first_confidence = overall_confidence
+            first_needs_review = needs_review
 
     logger.info(
-        "[%s] Đã ghi record vào file %s (confidence=%.2f, needs_review=%s).",
-        url, write_result.file_path, overall_confidence, needs_review,
+        "[%s] Đã ghi %d record vào file %s.",
+        url, len(extraction.records), write_result.file_path if write_result else file_path,
     )
     return FileCrawlResult(
         status="saved",
-        file_path=write_result.file_path,
-        data=data,
-        confidence=overall_confidence,
-        needs_review=needs_review,
+        file_path=write_result.file_path if write_result else None,
+        data=first_data,
+        confidence=first_confidence,
+        needs_review=first_needs_review,
+        record_count=len(extraction.records),
     )

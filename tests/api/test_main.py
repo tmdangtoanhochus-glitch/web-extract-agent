@@ -38,10 +38,10 @@ class _FakeAIClient(AIClient):
         if not self._success:
             return ExtractionResult(success=False, error=self._error)
         return ExtractionResult(
-            fields={
+            records=[{
                 name: FieldExtraction(value="giá trị mẫu", confidence=0.9, evidence="bằng chứng")
                 for name in field_descriptions
-            },
+            }],
             raw_response="{}",
             success=True,
         )

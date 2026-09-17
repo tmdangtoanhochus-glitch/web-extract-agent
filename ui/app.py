@@ -552,6 +552,31 @@ def _records_to_csv(records: list[dict]) -> str:
             **record.get("data", {}),
         }
         writer.writerow({name: text_cell(value) for name, value in row.items()})
+    # UTF-8 BOM để Excel mở đúng tiếng Việt không bị lỗi font (docs/kien_audit/03).
+    return "﻿" + buffer.getvalue()
+
+
+def _records_to_xlsx(records: list[dict]) -> bytes:
+    data_keys: list[str] = []
+    for record in records:
+        for key in record.get("data", {}):
+            if key not in data_keys:
+                data_keys.append(key)
+
+    rows = []
+    for record in records:
+        rows.append({
+            "record_id": record["record_id"],
+            "source_url": record["source_url"],
+            "confidence": record.get("confidence"),
+            "crawled_at": record["crawled_at"],
+            **record.get("data", {}),
+        })
+
+    import pandas as pd
+    df = pd.DataFrame(rows, columns=["record_id", "source_url", "confidence", "crawled_at"] + data_keys)
+    buffer = io.BytesIO()
+    df.to_excel(buffer, index=False, engine="openpyxl")
     return buffer.getvalue()
 
 
@@ -606,6 +631,12 @@ def _render_step4() -> None:
             data=_records_to_csv(records),
             file_name=f"{dataset_id}.csv",
             mime="text/csv",
+        )
+        st.download_button(
+            "⬇ Tải XLSX trang hiện tại",
+            data=_records_to_xlsx(records),
+            file_name=f"{dataset_id}.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         )
         with st.expander("Evidence (đoạn gốc AI trích xuất)"):
             for r in records:

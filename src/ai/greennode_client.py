@@ -22,6 +22,10 @@ có sẵn trong requirements.txt cho tầng fetch).
 
 Endpoint thật + model name lấy từ `.env` (`AI_BASE_URL`, `AI_API_KEY`, `AI_MODEL`)
 — KHÔNG hard-code giá trị thật trong code.
+
+Trang có thể chứa NHIỀU bản ghi giống nhau (vd. 10 quote, 20 sách trên 1 trang
+danh sách) — prompt yêu cầu AI trả về JSON ARRAY (mỗi phần tử là 1 bản ghi),
+không phải 1 object duy nhất như trước (xem docs/kien_audit/03).
 """
 from __future__ import annotations
 
@@ -40,11 +44,14 @@ _SYSTEM_PROMPT = (
     "Bạn là hệ thống trích xuất dữ liệu có cấu trúc từ nội dung trang web đã "
     "được làm sạch. Chỉ trích xuất giá trị THỰC SỰ xuất hiện trong nội dung "
     "được cung cấp, KHÔNG suy diễn hay bịa thông tin không có trong text. "
-    "Với mỗi field được yêu cầu, trả về: value (giá trị trích được, hoặc null "
-    "nếu không tìm thấy), confidence (số 0-1 thể hiện độ chắc chắn), evidence "
-    "(câu/đoạn gốc trong nội dung chứa giá trị đó, hoặc null nếu value là null). "
-    "CHỈ trả lời bằng 1 JSON object duy nhất, không kèm giải thích, không dùng "
-    "markdown code fence."
+    "Trang có thể chứa 1 hoặc nhiều bản ghi giống nhau (vd. nhiều sách, nhiều "
+    "quote). Với mỗi bản ghi và mỗi field, trả về: value (giá trị trích được, "
+    "hoặc null nếu không tìm thấy), confidence (số 0-1 thể hiện độ chắc chắn), "
+    "evidence (câu/đoạn gốc trong nội dung chứa giá trị đó, hoặc null). "
+    "Trả về 1 JSON array, mỗi phần tử là 1 object với key là tên field, value "
+    "là object có dạng {\"value\": ..., \"confidence\": ..., \"evidence\": ...}. "
+    "Nếu trang chỉ có 1 bản ghi, trả về array 1 phần tử. "
+    "CHỈ trả lời bằng JSON array, không kèm giải thích, không dùng markdown code fence."
 )
 
 
@@ -59,7 +66,7 @@ class GreenNodeChatClient(AIClient):
         model: str,
         timeout_seconds: float = 30.0,
         temperature: float = 0.0,
-        max_tokens: int = 2048,
+        max_tokens: int = 16384,
         client: Optional[httpx.Client] = None,
     ) -> None:
         _warn_if_base_url_missing_v1_suffix(base_url)
@@ -98,9 +105,9 @@ class GreenNodeChatClient(AIClient):
             response.raise_for_status()
             body = response.json()
             content = body["choices"][0]["message"]["content"]
-            parsed = _parse_json_object(content)
-            fields = _to_field_extractions(parsed, field_descriptions)
-            return ExtractionResult(fields=fields, raw_response=content, success=True)
+            parsed = _parse_json(content)
+            records = _to_records(parsed, field_descriptions)
+            return ExtractionResult(records=records, raw_response=content, success=True)
         except httpx.HTTPError as exc:
             logger.warning("Gọi AI extract lỗi mạng/HTTP: %s", exc)
             return ExtractionResult(success=False, error=str(exc))
@@ -130,41 +137,90 @@ def _build_user_prompt(markdown: str, field_descriptions: dict[str, str]) -> str
     return (
         f"Các field cần trích xuất:\n{fields_desc}\n\n"
         f"Nội dung trang (đã làm sạch, dạng Markdown):\n\"\"\"\n{markdown}\n\"\"\"\n\n"
-        f"Trả về đúng 1 JSON object với key là tên field, value là object có "
-        f"dạng {{\"value\": ..., \"confidence\": ..., \"evidence\": ...}}."
+        f"Trả về 1 JSON array, mỗi phần tử là 1 object với key là tên field, "
+        f"value là object có dạng {{\"value\": ..., \"confidence\": ..., "
+        f"\"evidence\": ...}}. Nếu trang có nhiều bản ghi, trả về nhiều phần tử."
     )
 
 
-def _parse_json_object(content: str) -> dict[str, Any]:
+def _parse_json(content: str) -> Any:
     try:
         return json.loads(content)
     except json.JSONDecodeError:
         pass
 
-    # Fallback: model có thể trả thêm text/markdown fence quanh JSON — lấy
-    # đoạn từ dấu { đầu tiên đến } cuối cùng rồi thử parse lại.
-    match = re.search(r"\{.*\}", content, re.DOTALL)
-    if not match:
-        raise ValueError(f"không tìm thấy JSON object trong response: {content!r}")
-    return json.loads(match.group(0))
+    # Fallback 1: model trả thêm text/markdown fence — lấy đoạn JSON đầu tiên.
+    match = re.search(r"[\[{].*[\]}]", content, re.DOTALL)
+    if match:
+        try:
+            return json.loads(match.group(0))
+        except json.JSONDecodeError:
+            pass
+
+    # Fallback 2: response bị truncate (max_tokens cắt giữa chừng) —
+    # tìm record hoàn chỉnh cuối cùng, cắt bỏ phần dở dang, đóng array.
+    repaired = _repair_truncated_json(content)
+    if repaired is not None:
+        logger.warning("AI response bị truncate — đã repair (%d -> %d chars).",
+                        len(content), len(repaired))
+        return json.loads(repaired)
+
+    raise ValueError(f"không parse được JSON từ AI response ({len(content)} chars)")
+
+
+def _repair_truncated_json(content: str) -> Optional[str]:
+    """Cố gắng repair JSON array bị truncate: tìm } hoàn chỉnh cuối cùng,
+    cắt bỏ phần dở dang, đóng array bằng ]."""
+    text = content.strip()
+    # Bỏ markdown fence nếu có
+    if text.startswith("```"):
+        text = re.sub(r"^```[a-z]*\n?", "", text)
+        text = re.sub(r"\n?```$", "", text).strip()
+    if not text.startswith("["):
+        return None
+    # Tìm vị trí } hoàn chỉnh cuối cùng (kèm comma trước hoặc sau)
+    last_complete = text.rfind("}")
+    if last_complete <= 0:
+        return None
+    truncated = text[:last_complete + 1]
+    # Đảm bảo kết thúc bằng , hoặc ] — nếu kết thúc bằng , thì bỏ comma
+    truncated = truncated.rstrip().rstrip(",")
+    return truncated + "]"
+
+
+def _to_records(
+    parsed: Any, field_descriptions: dict[str, str]
+) -> list[dict[str, FieldExtraction]]:
+    # AI trả về array → mỗi phần tử là 1 record.
+    if isinstance(parsed, list):
+        items = parsed
+    elif isinstance(parsed, dict):
+        # Backward compat: AI trả về single object → wrap thành array 1 phần tử.
+        items = [parsed]
+    else:
+        raise ValueError(f"response AI không phải JSON array/object: {parsed!r}")
+
+    records: list[dict[str, FieldExtraction]] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        records.append(_to_field_extractions(item, field_descriptions))
+    return records
 
 
 def _to_field_extractions(
-    parsed: Any, field_descriptions: dict[str, str]
+    item: dict[str, Any], field_descriptions: dict[str, str]
 ) -> dict[str, FieldExtraction]:
-    if not isinstance(parsed, dict):
-        raise ValueError(f"response AI không phải JSON object: {parsed!r}")
-
     # Model đôi khi trả key khác hoa/thường hoặc thừa khoảng trắng so với tên
     # field yêu cầu (vd. "quote" thay vì "Quote") dù đã trích đúng giá trị —
     # so khớp không phân biệt hoa/thường thay vì exact-match để field không bị
     # rơi về None/confidence 0 chỉ vì lệch cách viết hoa.
-    normalized_parsed = {str(key).strip().lower(): value for key, value in parsed.items()}
+    normalized_item = {str(key).strip().lower(): value for key, value in item.items()}
 
     fields: dict[str, FieldExtraction] = {}
     unmatched: list[str] = []
     for name in field_descriptions:
-        entry = normalized_parsed.get(name.strip().lower())
+        entry = normalized_item.get(name.strip().lower())
         if not isinstance(entry, dict):
             fields[name] = FieldExtraction(value=None, confidence=0.0, evidence=None)
             unmatched.append(name)
@@ -177,7 +233,7 @@ def _to_field_extractions(
     if unmatched:
         logger.warning(
             "AI response không có field %s (đã so khớp không phân biệt hoa/thường) "
-            "— response thật trả về key: %s", unmatched, list(parsed.keys()),
+            "— response thật trả về key: %s", unmatched, list(item.keys()),
         )
     return fields
 

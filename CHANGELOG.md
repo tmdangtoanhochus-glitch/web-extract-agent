@@ -258,6 +258,34 @@
   tình huống gửi lại kết quả: 12 pass. Có 1 cảnh báo deprecation Starlette/AnyIO
   đã tồn tại; chưa chạy browser/UAT, AI hoặc PostgreSQL thật.
 
+## Crawler — merge origin/main (audit Kiên) vào develop — 2026-09-17
+
+### Hợp nhất 2 nhánh làm việc song song
+- Merge `origin/main` (audit độc lập của Kiên, 2026-09-16) vào `develop` — 28 file
+  conflict, chủ yếu do 2 nhánh cùng sửa `src/pipeline.py`/`src/ai/greennode_client.py`
+  theo 2 hướng khác nhau cùng lúc (multi-record extraction bên main, Postgres/admin-auth/
+  ảnh/cookie bên develop). Giữ đủ tính năng cả 2 bên, không tính năng nào bị bỏ sót.
+- Port từ audit Kiên vào kiến trúc multi-record hiện có: field-name so khớp không phân
+  biệt hoa/thường trong `_to_records()` (bug tái xuất hiện khi Kiên viết lại hàm parse
+  AI response, đã có ở bản cũ nhưng bị rơi mất khi chuyển sang array-based).
+- Sửa bug `FETCH_RESPECT_ROBOTS_TXT` được đọc vào `Settings` nhưng chưa từng được dùng ở
+  `_build_default_app()` — set `false` trong `.env` trước đây không có tác dụng gì,
+  fetcher luôn fail-closed theo `HttpRobotsChecker()` mặc định.
+- Thêm export XLSX (nút "⬇ Tải XLSX trang hiện tại") và BOM UTF-8 cho CSV export (Excel
+  mở tiếng Việt không lỗi font) ở Bước 4 — theo audit Kiên, giữ nguyên phần chống CSV
+  injection (`text_cell`) đã có trên `develop`.
+- Thêm test multi-record cho `run_crawl_job()`/`run_file_crawl_job()` (chưa có test nào
+  xác nhận trực tiếp việc lưu/ghi NHIỀU record từ 1 lần gọi AI, dù kiến trúc đã hỗ trợ).
+- Phát hiện (chưa sửa — cần xác nhận thêm): `run_file_crawl_job()` ghi record ra file ở
+  dạng flatten (field thành cột riêng, phục vụ export CSV/XLSX/Parquet dễ hơn) nhưng
+  KHÔNG còn lưu `evidence` — khác với luồng DB (`run_crawl_job()`) vẫn lưu đủ evidence.
+  Có thể là đánh đổi có chủ đích cho export dạng bảng; cần người quyết định xác nhận.
+- Cập nhật `CLAUDE.md` ghi nhận module Runner (`src/runner/`) là module độc lập trong
+  cùng repo, không dùng chung code/schema với luồng crawl chính.
+- **229 test pass** (thêm test mới sau merge, xem `tests/test_pipeline.py`,
+  `tests/ai/test_greennode_client.py`, `tests/clean/test_html_cleaner.py`); chưa build
+  Docker/chạy Postgres thật để xác nhận lại (giới hạn mạng của môi trường làm việc).
+
 ## Crawler — cập nhật 2026-09-17
 
 ### Phase 11a: quản lý lịch

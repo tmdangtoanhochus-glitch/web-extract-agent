@@ -28,6 +28,9 @@ Xem `CLAUDE.md` để biết đầy đủ kiến trúc, nguyên tắc thiết k�
 - Crawl trang cần đăng nhập bằng cookie/session dán thủ công theo domain (panel admin).
 - Panel admin bảo vệ bằng HTTP Basic Auth (`ADMIN_USERNAME`/`ADMIN_PASSWORD`).
 - Log tiến trình crawl theo từng bước (`LOG_LEVEL=INFO` để xem trong console/docker logs).
+- Trích xuất NHIỀU record từ 1 trang (vd. trang danh sách 10 quote/20 sách) — AI trả về
+  JSON array thay vì 1 object, xem `record_count` trong response `/crawl`.
+- Export CSV (có BOM UTF-8, mở đúng tiếng Việt trên Excel) và XLSX ở Bước 4.
 
 **Đang làm dở / chưa làm:**
 - Fetch site JS-heavy bằng Playwright — đã có adapter, chưa bật làm mặc định trong app.

@@ -1,6 +1,8 @@
 """Test luồng orchestration run_crawl_job bằng test double cho fetch/AI
 (CLAUDE.md mục 6) + SQLiteStorage in-memory thật (không cần mock)."""
 import json
+import tempfile
+from pathlib import Path
 
 import pytest
 
@@ -46,10 +48,10 @@ class _FakeAIClient(AIClient):
 
 def _extraction(price_value=75000000, price_conf=0.9, date_value="2026-09-11", date_conf=0.8):
     return ExtractionResult(
-        fields={
+        records=[{
             "price": FieldExtraction(value=price_value, confidence=price_conf, evidence="giá x"),
             "date": FieldExtraction(value=date_value, confidence=date_conf, evidence="ngày y"),
-        },
+        }],
         raw_response="{}",
         success=True,
     )
@@ -359,7 +361,7 @@ def test_field_not_in_structured_data_still_falls_back_to_ai():
     html = '<html><head><meta property="og:title" content="SJC 1L"></head></html>'
     fetcher = _FakeFetcher(default_html=html)
     ai_client = _FakeAIClient(
-        [ExtractionResult(fields={"price": FieldExtraction(value=79900000, confidence=0.9, evidence="giá y")}, success=True)]
+        [ExtractionResult(records=[{"price": FieldExtraction(value=79900000, confidence=0.9, evidence="giá y")}], success=True)]
     )
     storage = _storage()
 
@@ -383,7 +385,7 @@ def test_only_unresolved_fields_are_sent_to_ai_client():
     html = '<html><head><meta property="og:title" content="SJC 1L"></head></html>'
     fetcher = _FakeFetcher(default_html=html)
     ai_client = _FakeAIClient(
-        [ExtractionResult(fields={"price": FieldExtraction(value=1, confidence=1.0)}, success=True)]
+        [ExtractionResult(records=[{"price": FieldExtraction(value=1, confidence=1.0)}], success=True)]
     )
     storage = _storage()
     seen_descriptions: dict[str, str] = {}
@@ -417,7 +419,7 @@ def test_ai_resolved_field_gets_cached_and_reused_without_ai_call_when_value_cha
     url = "https://example.com/gold"
     fetcher = _FakeFetcher(html_by_url={url: html1})
     ai_client = _FakeAIClient(
-        [ExtractionResult(fields={"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}, success=True)]
+        [ExtractionResult(records=[{"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}], success=True)]
     )
     storage = _storage()
 
@@ -450,8 +452,8 @@ def test_cache_fail_when_site_structure_changes_falls_back_to_ai_and_refreshes_c
     fetcher = _FakeFetcher(html_by_url={url: html1})
     ai_client = _FakeAIClient(
         [
-            ExtractionResult(fields={"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}, success=True),
-            ExtractionResult(fields={"price": FieldExtraction(value="90.000.000", confidence=0.85, evidence="e2")}, success=True),
+            ExtractionResult(records=[{"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}], success=True),
+            ExtractionResult(records=[{"price": FieldExtraction(value="90.000.000", confidence=0.85, evidence="e2")}], success=True),
         ]
     )
     storage = _storage()
@@ -481,8 +483,8 @@ def test_extraction_strategy_cache_is_scoped_per_domain():
     html = "<html><body><div><span>79.900.000</span></div></body></html>"
     ai_client = _FakeAIClient(
         [
-            ExtractionResult(fields={"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}, success=True),
-            ExtractionResult(fields={"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}, success=True),
+            ExtractionResult(records=[{"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}], success=True),
+            ExtractionResult(records=[{"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}], success=True),
         ]
     )
     storage = _storage()
@@ -554,7 +556,10 @@ def test_file_crawl_saves_to_file_without_creating_dataset(tmp_path):
 
     written = json.loads((tmp_path / "gold.json").read_text(encoding="utf-8"))
     assert len(written) == 1
-    assert written[0]["data"] == {"price": 75000000, "date": "2026-09-11"}
+    # Record ghi ra file dạng FLAT (field thành cột riêng, không nested dưới
+    # "data") — phục vụ export CSV/XLSX/Parquet dễ hơn, khác luồng DB.
+    assert written[0]["price"] == 75000000
+    assert written[0]["date"] == "2026-09-11"
     assert written[0]["source_url"] == "https://example.com/gold"
     assert written[0]["needs_review"] is False
 
@@ -687,7 +692,7 @@ def test_file_crawl_overwrite_row_replaces_by_key_field(tmp_path):
 
     written = json.loads((tmp_path / "gold.json").read_text(encoding="utf-8"))
     assert len(written) == 1  # cùng date -> ghi đè, không thêm dòng mới
-    assert written[0]["data"]["price"] == 2
+    assert written[0]["price"] == 2  # record flat, không nested dưới "data"
 
 
 def test_file_crawl_reuses_extraction_strategy_cache_across_file_and_db_flows(tmp_path):
@@ -697,7 +702,7 @@ def test_file_crawl_reuses_extraction_strategy_cache_across_file_and_db_flows(tm
     html = "<html><body><div><span>SJC 1L</span><span>79.900.000</span></div></body></html>"
     storage = _storage()
     ai_client = _FakeAIClient(
-        [ExtractionResult(fields={"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}, success=True)]
+        [ExtractionResult(records=[{"price": FieldExtraction(value="79.900.000", confidence=0.9, evidence="e")}], success=True)]
     )
 
     run_crawl_job(
@@ -723,9 +728,82 @@ def test_file_crawl_reuses_extraction_strategy_cache_across_file_and_db_flows(tm
 
     assert file_result.status == "saved"
     assert ai_client.calls == 1  # vẫn 1 — luồng file tận dụng cache, không gọi AI lại
+    assert file_result.data == {"price": "79.900.000"}
 
 
-# ---- image_fields (tải ảnh về, thay giá trị field bằng đường dẫn local) -----
+# ---- multi-record (1 URL có nhiều bản ghi, vd. trang danh sách) ------------
+def test_run_crawl_job_saves_multiple_records_when_ai_returns_several():
+    """Trang danh sách (vd. 3 quote) — AI trả về array nhiều record, phải lưu
+    HẾT chứ không chỉ record đầu (regression cho bug đã fix: trước đây chỉ
+    lưu 1 record dù trang có nhiều mục, xem docs/kien_audit/03)."""
+    fetcher = _FakeFetcher(default_html="<html><body><div>...</div></body></html>")
+    ai_client = _FakeAIClient(
+        [
+            ExtractionResult(
+                records=[
+                    {"quote": FieldExtraction(value="Quote A", confidence=0.9, evidence="e1")},
+                    {"quote": FieldExtraction(value="Quote B", confidence=0.85, evidence="e2")},
+                    {"quote": FieldExtraction(value="Quote C", confidence=0.8, evidence="e3")},
+                ],
+                success=True,
+            )
+        ]
+    )
+    storage = _storage()
+
+    result = run_crawl_job(
+        url="https://example.com/quotes",
+        field_descriptions={"quote": "câu trích dẫn"},
+        dataset_name="Quotes",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+    )
+
+    assert result.status == "saved"
+    assert result.record_count == 3
+    assert result.record.data == {"quote": "Quote A"}  # record đầu, backward compat
+
+    all_records = storage.list_records(result.dataset.dataset_id)
+    assert len(all_records) == 3
+    assert {r.data["quote"] for r in all_records} == {"Quote A", "Quote B", "Quote C"}
+
+
+def test_run_file_crawl_job_writes_multiple_records():
+    """Giống test trên nhưng cho luồng ghi file — cả 3 record phải được ghi
+    vào file, không chỉ record đầu."""
+    fetcher = _FakeFetcher(default_html="<html><body><div>...</div></body></html>")
+    ai_client = _FakeAIClient(
+        [
+            ExtractionResult(
+                records=[
+                    {"book": FieldExtraction(value="Book A", confidence=0.9, evidence="e1")},
+                    {"book": FieldExtraction(value="Book B", confidence=0.85, evidence="e2")},
+                ],
+                success=True,
+            )
+        ]
+    )
+    storage = _storage()
+    tmp_dir = tempfile.mkdtemp()
+
+    result = run_file_crawl_job(
+        url="https://example.com/books",
+        field_descriptions={"book": "tên sách"},
+        file_path="books.json",
+        write_mode="append",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+        exports_root=Path(tmp_dir),
+    )
+
+    assert result.status == "saved"
+    assert result.record_count == 2
+
+    written = json.loads((Path(tmp_dir) / "books.json").read_text(encoding="utf-8"))
+    assert len(written) == 2
+    assert {r["book"] for r in written} == {"Book A", "Book B"}
 def test_image_fields_downloads_and_replaces_value_with_local_path(monkeypatch):
     """`image_fields` là field người dùng khai báo tường minh là ảnh — sau khi
     AI trả về URL, code (rule-based) tải file về và thay giá trị field bằng
@@ -742,7 +820,7 @@ def test_image_fields_downloads_and_replaces_value_with_local_path(monkeypatch):
     ai_client = _FakeAIClient(
         [
             ExtractionResult(
-                fields={"anh": FieldExtraction(value="https://example.com/photo.jpg", confidence=0.9, evidence="e")},
+                records=[{"anh": FieldExtraction(value="https://example.com/photo.jpg", confidence=0.9, evidence="e")}],
                 success=True,
             )
         ]
@@ -776,7 +854,7 @@ def test_image_fields_download_failure_keeps_original_url_and_does_not_block_rec
     ai_client = _FakeAIClient(
         [
             ExtractionResult(
-                fields={"anh": FieldExtraction(value="https://example.com/broken.jpg", confidence=0.9, evidence="e")},
+                records=[{"anh": FieldExtraction(value="https://example.com/broken.jpg", confidence=0.9, evidence="e")}],
                 success=True,
             )
         ]

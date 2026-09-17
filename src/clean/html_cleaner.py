@@ -32,19 +32,7 @@ _TAGS_TO_STRIP = (
     "template",
 )
 
-_HEADING_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6")
-_LIST_TAGS = ("ul", "ol")
-# Tag được coi là "block" khi quyết định đệ quy xuống tiếp hay dừng lại render
-# nguyên khối làm 1 dòng — nếu 1 tag còn chứa 1 trong các tag này bên dưới,
-# phải đệ quy xuống thay vì gộp cả khối cha thành 1 dòng duy nhất (tránh lẫn
-# nội dung của nhiều mục lặp lại nằm cạnh nhau, vd. nhiều <div class="quote">
-# liên tiếp trên 1 trang).
-_BLOCK_DESCENDANT_TAGS = (
-    ("div", "p", "section", "article", "li", "blockquote", "pre", "figure", "figcaption", "details", "summary", "dd", "dt")
-    + _HEADING_TAGS
-    + _LIST_TAGS
-    + ("table",)
-)
+_RENDERABLE_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "table", "div", "span")
 
 
 @dataclass(frozen=True)
@@ -80,58 +68,59 @@ def clean_html(html: str) -> CleanedDocument:
 
 
 def _render_markdown(root: Tag) -> str:
-    """Đệ quy theo cấu trúc DOM thay vì chỉ gom `find_all` phẳng theo 1 danh
-    sách tag cố định (h1-h6/p/ul/ol/table) — nhiều site hiện đại (vd.
-    quotes.toscrape.com) đặt nội dung chính trong `<div>`/`<span>` chứ không
-    dùng `<p>`. Cách cũ: nếu trang có BẤT KỲ heading/p/list/table nào ở chỗ
-    khác (dù không liên quan, vd. link "Login" trong `<p>`), toàn bộ nội dung
-    div/span thật sự cần lấy bị bỏ sót hoàn toàn vì không rơi vào danh sách
-    tag đó — AI nhận markdown gần như rỗng, luôn trả `None`/confidence 0."""
+    """Lấy nội dung theo `_RENDERABLE_TAGS` (bao gồm `div`/`span` — nhiều site
+    hiện đại, vd. quotes.toscrape.com, đặt nội dung chính trong div/span chứ
+    không dùng `<p>`). Trước đây chỉ nhận h1-h6/p/ul/ol/table: nếu trang có
+    BẤT KỲ heading/p nào khác không liên quan (vd. link "Login"), toàn bộ nội
+    dung div/span thật sự cần lấy bị bỏ sót hoàn toàn — AI nhận markdown gần
+    như rỗng, luôn trả `None`/confidence 0 (xem docs/kien_audit/02)."""
     lines: list[str] = []
-    _walk_blocks(root, lines)
-    if lines:
-        return "\n\n".join(lines).strip()
-    # Fallback cùng cực: không có tag nào cả (vd. text thô không bọc tag) —
-    # lấy toàn bộ text thô.
-    return _clean_text(root.get_text(" "))
 
-
-def _walk_blocks(node: Tag, lines: list[str]) -> None:
-    for child in node.find_all(True, recursive=False):
-        if not isinstance(child, Tag):
+    for element in root.find_all(_RENDERABLE_TAGS, recursive=True):
+        # Bỏ qua các element nằm lồng trong element đã render rồi (p, ul, ol,
+        # table) — tránh lặp nội dung (vd. <span> trong <p> đã xử lý).
+        if _has_ancestor_in(element, ("p", "ul", "ol", "table")):
             continue
 
-        if child.name in _HEADING_TAGS:
-            text = _clean_text(child.get_text(" "))
+        if element.name in ("h1", "h2", "h3", "h4", "h5", "h6"):
+            level = int(element.name[1])
+            text = _clean_text(element.get_text(" "))
             if text:
-                level = int(child.name[1])
                 lines.append(f"{'#' * level} {text}")
-            continue
-
-        if child.name in _LIST_TAGS:
-            list_md = _render_list(child)
+        elif element.name == "p":
+            text = _clean_text(element.get_text(" "))
+            if text:
+                lines.append(text)
+        elif element.name in ("ul", "ol"):
+            list_md = _render_list(element)
             if list_md:
                 lines.append(list_md)
-            continue
-
-        if child.name == "table":
-            table_md = _render_table(child)
+        elif element.name == "table":
+            table_md = _render_table(element)
             if table_md:
                 lines.append(table_md)
-            continue
+        elif element.name in ("div", "span"):
+            # Chỉ render "leaf" div/span — không chứa element renderable con
+            # (h1-h6, p, ul, ol, table, div, span). Container div/span bị skip
+            # để tránh trùng lặp — các element con sẽ được render riêng.
+            if element.find(_RENDERABLE_TAGS, recursive=True):
+                continue
+            text = _clean_text(element.get_text(" "))
+            if text:
+                lines.append(text)
 
-        if child.find(_BLOCK_DESCENDANT_TAGS) is not None:
-            # Còn tag con dạng block bên trong — đệ quy xuống thay vì gộp cả
-            # khối cha thành 1 dòng, giữ đúng ranh giới từng mục (vd. tách
-            # riêng từng <div class="quote"> thay vì dính chung 1 dòng).
-            _walk_blocks(child, lines)
-            continue
+    if lines:
+        return "\n\n".join(lines).strip()
 
-        # "Khối lá": không còn tag con dạng block nào (chỉ còn text hoặc tag
-        # inline như span/small/a/strong...) — lấy nguyên text làm 1 dòng.
-        text = _clean_text(child.get_text(" "))
-        if text:
-            lines.append(text)
+    # Fallback: không có tag cấu trúc quen thuộc nào — lấy toàn bộ text thô.
+    return _clean_text(root.get_text("\n"))
+
+
+def _has_ancestor_in(element: Tag, tag_names: tuple[str, ...]) -> bool:
+    for parent in element.parents:
+        if getattr(parent, "name", None) in tag_names:
+            return True
+    return False
 
 
 def _render_list(list_tag: Tag) -> str:

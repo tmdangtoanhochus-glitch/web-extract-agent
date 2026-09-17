@@ -128,6 +128,14 @@ Có mock/test double cho từng interface để test được mà không cần c
   được riêng — vì scheduler sẽ gọi lại đúng các hàm này, không viết logic lồng trong route handler.
 - Trước khi thêm dependency mới ngoài danh sách tech stack ở trên, hỏi lại thay vì tự quyết.
 
+## Module Runner (`src/runner/`, `ui/runner_*.py`, `docs/RUNNER_*.md`)
+Module riêng, độc lập với luồng crawl/extract chính mô tả ở trên — ghi lại thao tác
+trình duyệt (Inspector/Recorder) rồi AI biên dịch thành testcase theo contract đóng, xem
+`runner_local_greennode_integration_design_v2.md` để biết kiến trúc đầy đủ. KHÔNG dùng
+chung code/schema với pipeline crawl (`src/pipeline.py`, `src/storage/*`) — 2 module tách
+biệt trong cùng repo. Khi sửa 1 module, không cần quan tâm/đụng tới module còn lại trừ
+khi yêu cầu tường minh nói rõ.
+
 ## Khi không chắc phạm vi
 Hỏi lại người dùng trước khi code, đặc biệt về: field bắt buộc cụ thể, ngưỡng confidence,
 danh sách domain whitelist ban đầu, format thật của endpoint AI runtime — ưu tiên chạy

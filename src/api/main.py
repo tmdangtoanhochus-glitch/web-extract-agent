@@ -72,6 +72,7 @@ class CrawlResponse(BaseModel):
     data: Optional[dict] = None
     confidence: Optional[float] = None
     needs_review: Optional[bool] = None
+    record_count: int = 0  # trang có thể chứa nhiều bản ghi (xem src/pipeline.py)
     detail: Optional[str] = None
 
 
@@ -244,6 +245,7 @@ def create_app(
                 data=file_result.data,
                 confidence=file_result.confidence,
                 needs_review=file_result.needs_review,
+                record_count=file_result.record_count,
             )
 
         if not req.dataset_id and not req.dataset_name:
@@ -278,6 +280,7 @@ def create_app(
             data=result.record.data if result.record else None,
             confidence=result.record.confidence if result.record else None,
             needs_review=result.record.needs_review if result.record else None,
+            record_count=result.record_count,
         )
 
     @app.exception_handler(RequestValidationError)
@@ -567,10 +570,19 @@ def _build_default_app() -> FastAPI:
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
     storage = _build_storage(settings)
+    # FETCH_RESPECT_ROBOTS_TXT=false (dev/test khi backend không tải được
+    # robots.txt thật do hạn chế mạng) -> AllowAllRobotsChecker tường minh.
+    # Trước đây biến này được đọc vào Settings nhưng KHÔNG BAO GIỜ dùng tới —
+    # fetcher luôn fail-closed theo HttpRobotsChecker() mặc định dù người
+    # dùng đã set false trong .env (xem docs/kien_audit/03 mục 2.6).
+    robots_checker = None
+    if not settings.fetch_respect_robots_txt:
+        from ..fetch.base import AllowAllRobotsChecker
+        robots_checker = AllowAllRobotsChecker()
     fetcher = HttpxFetcher(
         user_agent=settings.fetch_user_agent,
         delay_seconds=settings.fetch_default_delay_seconds,
-
+        robots_checker=robots_checker,
     )
     ai_client = GreenNodeChatClient(
         base_url=settings.ai_base_url,
