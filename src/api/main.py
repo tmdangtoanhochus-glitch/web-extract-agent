@@ -580,13 +580,13 @@ def _build_default_app() -> FastAPI:
     if not settings.fetch_respect_robots_txt:
         from ..fetch.base import AllowAllRobotsChecker
         robots_checker = AllowAllRobotsChecker()
-    chrome_path = os.environ.get("CHROME_EXECUTABLE_PATH", "")
+    chrome_path = os.environ.get("CHROME_EXECUTABLE_PATH", "") or None
     http_fetcher = HttpxFetcher(
         user_agent=settings.fetch_user_agent,
         delay_seconds=settings.fetch_default_delay_seconds,
         robots_checker=robots_checker,
     )
-    if chrome_path:
+    try:
         from ..fetch.playwright_fetcher import PlaywrightFetcher
         pw_fetcher = PlaywrightFetcher(
             user_agent=settings.fetch_user_agent,
@@ -596,7 +596,7 @@ def _build_default_app() -> FastAPI:
             chrome_executable_path=chrome_path,
         )
         fetcher = HybridFetcher(http_fetcher, pw_fetcher)
-    else:
+    except Exception:
         fetcher = http_fetcher
     ai_client = GreenNodeChatClient(
         base_url=settings.ai_base_url,
