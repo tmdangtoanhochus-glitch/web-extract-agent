@@ -163,9 +163,7 @@ class PlaywrightFetcher(FetchEngine):
                 html = _inject_api_data_as_table(html, largest)
                 logger.info("Injected %d records from API interception into HTML.", len(largest))
             else:
-                # Fallback: try calling known API patterns from browser context
-                # (page has cookies/session that direct httpx doesn't have)
-                # Note: some APIs use POST (e.g. vietstock.vn/data/corporateaz)
+                # Fallback 1: try calling known API patterns from browser context
                 try:
                     from urllib.parse import urlsplit
                     parts = urlsplit(url)
@@ -200,6 +198,28 @@ class PlaywrightFetcher(FetchEngine):
                                     break
                 except Exception:
                     pass
+
+                # Fallback 2: read rendered DOM tables directly (AJAX already loaded data)
+                if not api_json_data:
+                    try:
+                        table_html = page.evaluate(
+                            """() => {
+                                const tables = document.querySelectorAll('table');
+                                let result = '';
+                                for (const t of tables) {
+                                    const rows = t.querySelectorAll('tr');
+                                    if (rows.length > 3) {
+                                        result += t.outerHTML;
+                                    }
+                                }
+                                return result;
+                            }"""
+                        )
+                        if table_html and len(table_html) > 200:
+                            html = html + table_html
+                            logger.info("Injected rendered DOM tables: %d chars", len(table_html))
+                    except Exception:
+                        pass
             status_code = response.status if response is not None else None
             success = response is not None and response.ok
             error = None
