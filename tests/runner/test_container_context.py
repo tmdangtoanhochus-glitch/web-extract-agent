@@ -6,7 +6,7 @@ from scripts.prepare_container_context import FIXED, prepare
 
 
 def fixture_source(root):
-    for relative in (*FIXED, "src/__init__.py", "ui/app.py"):
+    for relative in (*FIXED, "src/__init__.py", "ui/crawl.py"):
         path = root / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_bytes(b"# synthetic source\r\n")
@@ -16,7 +16,7 @@ def test_context_only_reads_allowed_sources_and_normalizes_shell(tmp_path, monke
     fixture_source(tmp_path)
     # Trap unapproved reads without creating any credential file.
     original = Path.read_text
-    allowed = {tmp_path / p for p in (*FIXED, "src/__init__.py", "ui/app.py")}
+    allowed = {tmp_path / p for p in (*FIXED, "src/__init__.py", "ui/crawl.py")}
     def guarded(path, *args, **kwargs):
         assert path in allowed
         return original(path, *args, **kwargs)

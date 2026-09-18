@@ -3,7 +3,7 @@
 # nginx phía trước lo route /health + reverse proxy, xem deploy/nginx-ui.conf.
 set -e
 
-streamlit run ui/app.py \
+streamlit run ui/crawl.py \
     --server.port 8501 \
     --server.address 127.0.0.1 \
     --server.headless true &

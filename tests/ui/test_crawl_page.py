@@ -2,7 +2,7 @@ from pathlib import Path
 import httpx
 from streamlit.testing.v1 import AppTest
 
-PAGE = Path(__file__).resolve().parents[2] / "ui" / "app.py"
+PAGE = Path(__file__).resolve().parents[2] / "ui" / "crawl.py"
 
 
 def test_cookie_and_report_after_rendering_error(monkeypatch):

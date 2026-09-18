@@ -37,7 +37,7 @@ def exception_frames(error):
 
 class Frame(BaseModel):
     model_config = ConfigDict(extra="forbid")
-    file: Literal["ui/app.py"]
+    file: Literal["ui/crawl.py"]
     line: int = Field(ge=1, le=100000)
 
 

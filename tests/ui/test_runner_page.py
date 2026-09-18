@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import httpx
 from streamlit.testing.v1 import AppTest
 
-PAGE = Path(__file__).resolve().parents[2] / "ui" / "pages" / "8_Runner.py"
+PAGE = Path(__file__).resolve().parents[2] / "ui" / "pages" / "2_Automation.py"
 
 
 def test_late_result_is_distinct_from_lost_status(monkeypatch):

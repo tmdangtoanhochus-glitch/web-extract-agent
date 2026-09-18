@@ -58,7 +58,7 @@ Cả 2 cùng implement `StorageEngine` — đổi backend chỉ cần sửa `.en
 ## Panel admin (Basic Auth) + crawl trang cần đăng nhập
 
 ```env
-# .env — BẮT BUỘC set cả 2 để dùng panel admin (/admin/*, ui/pages/9_Admin_Debug.py)
+# .env — BẮT BUỘC set cả 2 để dùng panel admin (/admin/*, ui/pages/3_Admin.py)
 # — thiếu 1 trong 2 thì panel TỪ CHỐI mọi request (401), không mở cửa ngầm định.
 ADMIN_USERNAME=
 ADMIN_PASSWORD=
@@ -99,7 +99,7 @@ cp .env.example .env
 
 python -m pytest tests/ -v          # chạy test bằng mock, không cần credentials
 uvicorn src.api.main:app --reload    # chạy backend
-streamlit run ui/app.py              # chạy giao diện (terminal khác)
+streamlit run ui/crawl.py              # chạy giao diện (terminal khác)
 ```
 
 > `requirements.txt` dùng version CỐ ĐỊNH (`==`, sinh bằng `pip freeze` từ venv sạch),
@@ -123,7 +123,7 @@ Format API đã xác nhận qua docs.greennode.ai (không phải giả định �
   — ngưỡng này chỉ gắn cờ `needs_review=true` trong record/response `/crawl` để UI cảnh
   báo người dùng xem lại, KHÔNG loại bỏ hay chặn lưu record nào.
 - `AI_DEBUG_BASE_URL`/`AI_DEBUG_API_KEY`/`AI_DEBUG_MODEL`/`AI_DEBUG_TIMEOUT_SECONDS`:
-  cấu hình riêng cho panel admin "AI gợi ý sửa lỗi" (`ui/pages/9_Admin_Debug.py`) —
+  cấu hình riêng cho panel admin "AI gợi ý sửa lỗi" (`ui/pages/3_Admin.py`) —
   KHÔNG dùng trong pipeline crawl/extract. Mỗi biến fallback về biến `AI_*` tương ứng
   nếu để trống (dùng chung endpoint/model với extract theo mặc định).
 

@@ -68,7 +68,7 @@ def load_settings() -> Settings:
         database_url=os.environ.get("DATABASE_URL", ""),
         api_port=int(os.environ.get("API_PORT", "8000")),
         log_level=os.environ.get("LOG_LEVEL", "INFO"),
-        # Basic Auth cho panel admin nội bộ (/admin/*, ui/pages/9_Admin_Debug.py)
+        # Basic Auth cho panel admin nội bộ (/admin/*, ui/pages/3_Admin.py)
         # — rỗng nếu chưa set trong .env (xem cảnh báo log lúc khởi động app ở
         # src/api/main.py: KHÔNG chạy production mà thiếu 2 biến này).
         admin_username=os.environ.get("ADMIN_USERNAME", ""),

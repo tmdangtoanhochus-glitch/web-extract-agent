@@ -39,7 +39,7 @@ có adapter nhưng chưa được kiểm chứng integration; chưa dùng làm c
 Ở terminal khác, chạy UI như trước:
 
 ```powershell
-python -m streamlit run ui/app.py
+python -m streamlit run ui/crawl.py
 ```
 
 Mở trang **Runner**, đăng nhập, tạo agent và giữ token được cấp một lần.

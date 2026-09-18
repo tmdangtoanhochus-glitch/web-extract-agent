@@ -21,9 +21,9 @@ import logging
 import json
 import secrets
 from pathlib import Path
-from typing import Callable
+from typing import Callable, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
@@ -42,10 +42,10 @@ class SiteCredentialRequest(BaseModel):
     cookie_header: str
 
 
-_basic_auth = HTTPBasic()
+_basic_auth = HTTPBasic(auto_error=False)
 
 
-def _make_admin_auth_dependency(admin_username: str, admin_password: str):
+def _make_admin_auth_dependency(admin_username: str, admin_password: str, session_admin_check=None):
     """HTTP Basic Auth cho toàn bộ router `/admin/*` — mặc định TỪ CHỐI (401)
     nếu `ADMIN_USERNAME`/`ADMIN_PASSWORD` chưa cấu hình trong `.env`, KHÔNG
     mở cửa ngầm định (nhất quán với nguyên tắc "mặc định luôn kiểm tra, không
@@ -53,7 +53,20 @@ def _make_admin_auth_dependency(admin_username: str, admin_password: str):
     Dùng `secrets.compare_digest` để so sánh không lộ thời gian xử lý (chặn
     timing attack đoán mật khẩu ký tự từng ký tự)."""
 
-    def _check(credentials: HTTPBasicCredentials = Depends(_basic_auth)) -> None:
+    def _check(
+        request: Request, credentials: Optional[HTTPBasicCredentials] = Depends(_basic_auth)
+    ) -> None:
+        # Đăng nhập admin CHUNG: phiên Runner có role admin (Bearer) được chấp nhận
+        # cho cả crawl lẫn automation; Basic từ .env vẫn là đường dự phòng.
+        header = request.headers.get("authorization", "")
+        if header.startswith("Bearer ") and session_admin_check is not None:
+            if session_admin_check(header[7:]):
+                return
+            raise HTTPException(status_code=401, detail="Phiên admin không hợp lệ hoặc đã hết hạn")
+        if credentials is None:
+            raise HTTPException(
+                status_code=401, detail="Cần đăng nhập admin", headers={"WWW-Authenticate": "Basic"}
+            )
         if not admin_username or not admin_password:
             raise HTTPException(
                 status_code=401,
@@ -115,6 +128,7 @@ def create_admin_router(
     suggest_fix_fn: Callable[..., DebugSuggestion] = suggest_fix,
     admin_username: str = "",
     admin_password: str = "",
+    session_admin_check: Optional[Callable[[str], bool]] = None,
 ) -> APIRouter:
     """`suggest_fix_fn` cho phép inject test double — không cần gọi AI thật để
     test route (CLAUDE.md mục 6). `admin_username`/`admin_password` rỗng =
@@ -122,7 +136,7 @@ def create_admin_router(
     router = APIRouter(
         prefix="/admin",
         tags=["admin-debug-internal"],
-        dependencies=[Depends(_make_admin_auth_dependency(admin_username, admin_password))],
+        dependencies=[Depends(_make_admin_auth_dependency(admin_username, admin_password, session_admin_check))],
     )
 
     @router.get("/crawl-reports")

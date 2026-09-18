@@ -3,7 +3,7 @@
 
 **KHÔNG dành cho người dùng cuối** — Streamlit tự thêm trang này vào sidebar
 multipage (do nằm trong `ui/pages/`), tách biệt hoàn toàn khỏi luồng chính
-(`ui/app.py`). Backend yêu cầu HTTP Basic Auth cho MỌI route `/admin/*`
+(`ui/crawl.py`). Backend yêu cầu HTTP Basic Auth cho MỌI route `/admin/*`
 (`ADMIN_USERNAME`/`ADMIN_PASSWORD` trong `.env`, xem `src/api/admin.py`) —
 trang này tự xin username/password rồi gắn vào MỌI request gọi API.
 
@@ -22,46 +22,82 @@ import streamlit as st
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
-st.set_page_config(page_title="Admin Debug", page_icon="🛠️", layout="wide")
+st.set_page_config(page_title="Admin", page_icon="🛠️", layout="wide")
 
 st.warning(
     "🛠️ **Màn nội bộ (admin/dev)** — không dành cho người dùng thường. "
     "AI ở đây chỉ ĐỌC traceback/code và GỢI Ý sửa lỗi dạng text — không tự động sửa file, "
     "không thực thi lệnh gì. Bạn tự đọc/copy và áp dụng thủ công bên ngoài (git/editor riêng)."
 )
-st.title("🛠️ Admin Debug")
+st.title("🛠️ Admin — quản lý Crawl & Automation")
 
-# ---- Đăng nhập (HTTP Basic Auth — backend bắt buộc, xem src/api/admin.py) --
+# ---- Đăng nhập admin CHUNG cho Crawl + Automation ---------------------------
+# Tài khoản admin của Runner (role=admin) dùng được cho cả /admin/* (crawl) lẫn
+# /runner/* (automation); phiên dùng chung với trang Automation (`runner_session`).
+# Đường dự phòng: ADMIN_USERNAME/ADMIN_PASSWORD trong .env (HTTP Basic) — chỉ mở
+# phần Crawl, không có phiên Runner.
 if "admin_auth" not in st.session_state:
     st.session_state.admin_auth = None
 
+
+def _runner_admin_session_ok(token: str) -> bool:
+    try:
+        resp = httpx.get(f"{API_BASE_URL}/runner/me", headers={"Authorization": f"Bearer {token}"}, timeout=10.0)
+        return resp.status_code == 200 and resp.json().get("role") == "admin"
+    except (httpx.HTTPError, ValueError):
+        return False
+
+
+if st.session_state.admin_auth is None and st.session_state.get("runner_session"):
+    if _runner_admin_session_ok(st.session_state.runner_session):
+        st.session_state.admin_auth = {"kind": "bearer", "token": st.session_state.runner_session}
+
 if st.session_state.admin_auth is None:
-    st.subheader("Đăng nhập")
+    st.subheader("Đăng nhập admin")
+    st.caption("Dùng tài khoản admin Runner để quản lý cả Crawl và Automation.")
     with st.form("admin_login"):
         u = st.text_input("Username")
         p = st.text_input("Password", type="password")
         submitted = st.form_submit_button("Đăng nhập")
     if submitted:
         try:
+            login = httpx.post(f"{API_BASE_URL}/runner/login", json={"username": u, "password": p}, timeout=10.0)
+            if login.status_code == 200:
+                body = login.json()
+                if body["user"]["role"] != "admin":
+                    st.error("Tài khoản này không có quyền admin.")
+                    st.stop()
+                st.session_state.runner_session = body["session"]
+                st.session_state.admin_auth = {"kind": "bearer", "token": body["session"]}
+                st.rerun()
             resp = httpx.get(f"{API_BASE_URL}/admin/errors", auth=(u, p), timeout=10.0)
         except httpx.HTTPError as exc:
             st.error(f"Không gọi được API ({API_BASE_URL}): {exc}")
             st.stop()
         if resp.status_code == 401:
-            st.error("Sai username/password, hoặc server chưa cấu hình ADMIN_USERNAME/ADMIN_PASSWORD trong .env.")
+            st.error("Sai username/password (hoặc chưa có admin Runner / ADMIN_USERNAME trong .env).")
             st.stop()
-        st.session_state.admin_auth = (u, p)
+        st.session_state.admin_auth = {"kind": "basic", "user": u, "pass": p}
         st.rerun()
     st.stop()
 
 _AUTH = st.session_state.admin_auth
 if st.sidebar.button("Đăng xuất"):
+    if _AUTH["kind"] == "bearer":
+        try:
+            httpx.post(f"{API_BASE_URL}/runner/logout", headers={"Authorization": f"Bearer {_AUTH['token']}"}, timeout=10.0)
+        except httpx.HTTPError:
+            pass
     st.session_state.admin_auth = None
+    st.session_state.pop("runner_session", None)
     st.rerun()
+st.sidebar.caption("Đăng nhập: " + ("admin Runner (Crawl + Automation)" if _AUTH["kind"] == "bearer" else "admin .env (chỉ Crawl)"))
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(base_url=API_BASE_URL, auth=_AUTH, timeout=60.0)
+    if _AUTH["kind"] == "bearer":
+        return httpx.Client(base_url=API_BASE_URL, headers={"Authorization": f"Bearer {_AUTH['token']}"}, timeout=60.0)
+    return httpx.Client(base_url=API_BASE_URL, auth=(_AUTH["user"], _AUTH["pass"]), timeout=60.0)
 
 
 def _api_get(path: str) -> Optional[Any]:
@@ -105,7 +141,11 @@ def _api_delete(path: str) -> Optional[dict]:
         return None
 
 
-tab_errors, tab_credentials, tab_reports = st.tabs(["❌ Job lỗi & gợi ý sửa", "🔑 Cookie cũ", "Báo lỗi từ người dùng"])
+(tab_errors, tab_credentials, tab_reports,
+ tab_auto_users, tab_auto_audit) = st.tabs([
+    "Crawl · Job lỗi & gợi ý sửa", "Crawl · Cookie", "Crawl · Báo lỗi từ người dùng",
+    "Automation · Người dùng", "Automation · Audit",
+])
 
 # Đặt trước tab_errors vì tab đó có thể st.stop() khi API lỗi.
 with st.sidebar.expander("💬 Phản hồi AI đã chuyển admin", expanded=False):
@@ -127,9 +167,7 @@ with tab_errors:
     if st.button("🔄 Tải lại danh sách lỗi"):
         st.rerun()
 
-    errors = _api_get("/admin/errors")
-    if errors is None:
-        st.stop()
+    errors = _api_get("/admin/errors") or {}
 
     scheduled_errors = errors.get("scheduled_job_errors", [])
     manual_errors = errors.get("manual_crawl_errors", [])
@@ -225,3 +263,59 @@ except ModuleNotFoundError as exc:
 
 _admin_fb_post = lambda path, body: _api_post(path, body)
 feedback_panel(_admin_fb_post, "admin")
+
+
+# ---- Automation (Runner): quản lý user, yêu cầu quên mật khẩu, audit ---------
+def _runner_api(method: str, path: str, body: Optional[dict] = None) -> Optional[Any]:
+    try:
+        with _client() as client:
+            resp = client.request(method, "/runner" + path, json=body)
+        if resp.status_code >= 400:
+            st.error(f"Automation {resp.status_code}: {resp.text[:300]}")
+            return None
+        return resp.json()
+    except (httpx.HTTPError, ValueError) as exc:
+        st.error(f"Không gọi được API Automation: {exc}")
+        return None
+
+
+from datetime import datetime, timezone
+
+with tab_auto_users:
+    if _AUTH["kind"] != "bearer":
+        st.info("Đăng nhập bằng tài khoản admin Runner để quản lý Automation "
+                "(đăng nhập hiện tại là admin .env, chỉ dùng cho Crawl).")
+    else:
+        me = _runner_api("GET", "/me") or {}
+        pending = _runner_api("GET", "/password-reset-requests") or []
+        if pending:
+            st.warning(f"Có {len(pending)} yêu cầu quên mật khẩu đang chờ xử lý.")
+            for req in pending:
+                st.write(f"**{req['username']}** — yêu cầu lúc "
+                         + datetime.fromtimestamp(req["created_at"], timezone.utc).isoformat())
+            st.caption("Đặt lại mật khẩu cho đúng người ở danh sách bên dưới — yêu cầu tự biến mất khi xong.")
+            st.markdown("---")
+        with st.form("admin_new_runner_user", clear_on_submit=True):
+            new_name = st.text_input("Username mới")
+            new_password = st.text_input("Mật khẩu (tối thiểu 12 ký tự)", type="password")
+            role = st.selectbox("Role", ["user", "admin"])
+            if st.form_submit_button("Tạo user"):
+                if _runner_api("POST", "/users", {"username": new_name, "password": new_password, "role": role}):
+                    st.success("Đã tạo user")
+        for u in _runner_api("GET", "/users") or []:
+            st.write(u)
+            if u["id"] != me.get("id") and st.button("Khóa" if u["is_active"] else "Mở khóa", key="active_" + u["id"]):
+                _runner_api("PATCH", "/users/" + u["id"], {"is_active": not u["is_active"]})
+                st.rerun()
+            with st.expander(f"Đặt lại mật khẩu cho {u['username']}"):
+                with st.form(f"reset_pw_{u['id']}", clear_on_submit=True):
+                    new_pw = st.text_input("Mật khẩu mới (tối thiểu 12 ký tự)", type="password", key="new_pw_" + u["id"])
+                    if st.form_submit_button("Đặt lại"):
+                        if _runner_api("POST", f"/users/{u['id']}/reset-password", {"new_password": new_pw}):
+                            st.success(f"Đã đặt mật khẩu mới cho {u['username']} — tự báo lại cho user qua kênh khác.")
+
+with tab_auto_audit:
+    if _AUTH["kind"] != "bearer":
+        st.info("Cần đăng nhập bằng tài khoản admin Runner.")
+    else:
+        st.dataframe(_runner_api("GET", "/audit") or [])

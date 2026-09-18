@@ -566,6 +566,7 @@ def create_app(
     # Panel admin nội bộ ("AI gợi ý sửa lỗi") — xem docstring src/api/admin.py.
     app.include_router(
         create_admin_router(
+            session_admin_check=_runner_admin_checker(runner_service),
             storage=storage,
             ai_debug_base_url=ai_debug_base_url,
             ai_debug_api_key=ai_debug_api_key,
@@ -577,6 +578,21 @@ def create_app(
     )
 
     return app
+
+
+def _runner_admin_checker(runner_service):
+    """Đăng nhập admin chung: token phiên Runner của user role=admin dùng được cho /admin/*."""
+    if runner_service is None:
+        return None
+
+    def check(token: str) -> bool:
+        try:
+            with runner_service.repo.transaction():
+                return runner_service.authenticate(token)["role"] == "admin"
+        except Exception:
+            return False
+
+    return check
 
 
 def _build_default_app() -> FastAPI:

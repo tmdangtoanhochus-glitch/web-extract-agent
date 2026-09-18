@@ -110,8 +110,7 @@ if st.sidebar.button("Đăng xuất Runner"):
     st.session_state.runner_discovery_generation = st.session_state.get("runner_discovery_generation", 0) + 1
     st.rerun()
 
-tabs = st.tabs(["Chạy testcase", "Lịch sử & kết quả", "Agent", "Thông báo"] +
-               (["Quản trị"] if me["role"] == "admin" else []) + ["Describe", "Record local", "Inspector local"])
+tabs = st.tabs(["Chạy testcase", "Lịch sử & kết quả", "Agent", "Thông báo", "Describe", "Record local", "Inspector local"])
 
 with tabs[-3]:
     st.subheader("Mô tả flow để tạo workbook nháp")
@@ -325,36 +324,4 @@ with tabs[3]:
                    datetime.fromtimestamp(n["delete_after"], timezone.utc).isoformat())
 
 if me["role"] == "admin":
-    with tabs[4]:
-        pending_resets = api("GET", "/password-reset-requests") or []
-        if pending_resets:
-            st.warning(f"Có {len(pending_resets)} yêu cầu quên mật khẩu đang chờ xử lý.")
-            for req in pending_resets:
-                st.write(
-                    f"**{req['username']}** — yêu cầu lúc "
-                    + datetime.fromtimestamp(req["created_at"], timezone.utc).isoformat()
-                )
-            st.caption("Cuộn xuống danh sách user bên dưới để đặt lại mật khẩu cho đúng người — "
-                       "request tự biến mất khỏi danh sách chờ ngay khi bạn đặt lại xong.")
-            st.markdown("---")
-
-        with st.form("new_runner_user", clear_on_submit=True):
-            new_name = st.text_input("Username mới")
-            new_password = st.text_input("Mật khẩu (tối thiểu 12 ký tự)", type="password")
-            role = st.selectbox("Role", ["user", "admin"])
-            if st.form_submit_button("Tạo user"):
-                if api("POST", "/users", {"username": new_name, "password": new_password, "role": role}):
-                    st.success("Đã tạo user")
-        for u in api("GET", "/users") or []:
-            st.write(u)
-            if u["id"] != me["id"] and st.button("Khóa" if u["is_active"] else "Mở khóa", key="active_"+u["id"]):
-                api("PATCH", "/users/"+u["id"], {"is_active": not u["is_active"]})
-                st.rerun()
-            with st.expander(f"Đặt lại mật khẩu cho {u['username']}"):
-                with st.form(f"reset_pw_{u['id']}", clear_on_submit=True):
-                    new_pw = st.text_input("Mật khẩu mới (tối thiểu 12 ký tự)", type="password", key="new_pw_"+u["id"])
-                    if st.form_submit_button("Đặt lại"):
-                        if api("POST", f"/users/{u['id']}/reset-password", {"new_password": new_pw}):
-                            st.success(f"Đã đặt mật khẩu mới cho {u['username']} — tự báo lại cho user qua kênh khác.")
-        with st.expander("Audit Runner"):
-            st.dataframe(api("GET", "/audit") or [])
+    st.sidebar.info("Quản lý user, yêu cầu quên mật khẩu và audit ở trang **Admin** (đăng nhập chung).")

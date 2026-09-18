@@ -1067,8 +1067,8 @@ except Exception as exc:
     frames = []
     tb = exc.__traceback__
     while tb:
-        if tb.tb_frame.f_code.co_filename.replace("\\", "/").endswith("ui/app.py"):
-            frames.append({"file": "ui/app.py", "line": tb.tb_lineno})
+        if tb.tb_frame.f_code.co_filename.replace("\\", "/").endswith("ui/crawl.py"):
+            frames.append({"file": "ui/crawl.py", "line": tb.tb_lineno})
         tb = tb.tb_next
     kind = type(exc).__name__
     allowed = {"TypeError", "ValueError", "KeyError", "IndexError", "AttributeError", "HTTPError", "RuntimeError"}

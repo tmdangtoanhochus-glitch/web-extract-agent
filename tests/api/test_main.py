@@ -638,3 +638,29 @@ def test_ignore_robots_requires_reason_and_uses_overridden_fetcher(caplog):
     assert resp.status_code == 200
     assert _Fetcher.last.ignored == ("example.com", "Tôi là chủ website")
     assert "BỎ QUA robots.txt" in caplog.text
+
+
+def test_unified_admin_login_runner_admin_session_opens_crawl_admin(tmp_path):
+    """Một tài khoản admin Runner dùng chung cho /admin/* (crawl) và /runner/* (automation)."""
+    from src.runner.repository import Repository
+    from src.runner.service import Service
+    repo = Repository()
+    service = Service(repo, tmp_path / "runner")
+    service.add_user("boss", "Sup3r-secret-pass", "admin", bootstrap=True)
+    service.add_user("staff", "Another-secret-pass", "user")
+    app = create_app(fetcher=_FakeFetcher(), ai_client=_FakeAIClient(), storage=SQLiteStorage(":memory:"),
+                     runner_service=service, admin_username="legacy", admin_password="legacy-pass")
+    client = TestClient(app)
+    try:
+        def login(u, p):
+            return client.post("/runner/login", json={"username": u, "password": p}).json()["session"]
+
+        admin_token, user_token = login("boss", "Sup3r-secret-pass"), login("staff", "Another-secret-pass")
+        assert client.get("/admin/errors").status_code == 401
+        assert client.get("/admin/errors", headers={"Authorization": f"Bearer {admin_token}"}).status_code == 200
+        assert client.get("/runner/users", headers={"Authorization": f"Bearer {admin_token}"}).status_code == 200
+        assert client.get("/admin/errors", headers={"Authorization": f"Bearer {user_token}"}).status_code == 401
+        assert client.get("/admin/errors", headers={"Authorization": "Bearer bogus"}).status_code == 401
+        assert client.get("/admin/errors", auth=("legacy", "legacy-pass")).status_code == 200  # dự phòng
+    finally:
+        repo.close()
