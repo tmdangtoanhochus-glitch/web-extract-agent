@@ -160,7 +160,36 @@ class PlaywrightFetcher(FetchEngine):
             if api_json_data:
                 largest = max(api_json_data, key=len)
                 html = _inject_api_data_as_table(html, largest)
-                logger.info("Injected %d records from API into HTML.", len(largest))
+                logger.info("Injected %d records from API interception into HTML.", len(largest))
+            else:
+                # Fallback: try calling known API patterns from browser context
+                # (page has cookies/session that direct httpx doesn't have)
+                try:
+                    from urllib.parse import urlsplit
+                    parts = urlsplit(url)
+                    base = f"{parts.scheme}://{parts.netloc}"
+                    # Try common API patterns
+                    for api_path in ["/data/corporateaz", "/api/data", "/data/list"]:
+                        result = page.evaluate(
+                            """async (url) => {
+                                try {
+                                    const resp = await fetch(url, {credentials: 'include'});
+                                    if (!resp.ok) return null;
+                                    const text = await resp.text();
+                                    return text;
+                                } catch(e) { return null; }
+                            }""",
+                            base + api_path,
+                        )
+                        if result and result.strip().startswith("["):
+                            import json as _json
+                            parsed = _json.loads(result)
+                            if isinstance(parsed, list) and len(parsed) > 2:
+                                html = _inject_api_data_as_table(html, parsed)
+                                logger.info("Injected %d records from page.evaluate API call.", len(parsed))
+                                break
+                except Exception:
+                    pass
             status_code = response.status if response is not None else None
             success = response is not None and response.ok
             error = None
