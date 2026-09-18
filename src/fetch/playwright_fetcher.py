@@ -148,8 +148,9 @@ class PlaywrightFetcher(FetchEngine):
                             parsed = json.loads(body)
                             if isinstance(parsed, list) and len(parsed) > 2:
                                 api_json_data.append(parsed)
-                except Exception:
-                    pass
+                                logger.info("API interception captured %d records from %s", len(parsed), response.url[:80])
+                except Exception as exc:
+                    logger.warning("API interception error for %s: %s", response.url[:80], exc)
             page.on("response", _capture_api)
             response = page.goto(
                 url, timeout=self._timeout_seconds * 1000, wait_until=self._wait_until
@@ -164,30 +165,39 @@ class PlaywrightFetcher(FetchEngine):
             else:
                 # Fallback: try calling known API patterns from browser context
                 # (page has cookies/session that direct httpx doesn't have)
+                # Note: some APIs use POST (e.g. vietstock.vn/data/corporateaz)
                 try:
                     from urllib.parse import urlsplit
                     parts = urlsplit(url)
                     base = f"{parts.scheme}://{parts.netloc}"
-                    # Try common API patterns
                     for api_path in ["/data/corporateaz", "/api/data", "/data/list"]:
-                        result = page.evaluate(
-                            """async (url) => {
-                                try {
-                                    const resp = await fetch(url, {credentials: 'include'});
-                                    if (!resp.ok) return null;
-                                    const text = await resp.text();
-                                    return text;
-                                } catch(e) { return null; }
-                            }""",
-                            base + api_path,
-                        )
-                        if result and result.strip().startswith("["):
-                            import json as _json
-                            parsed = _json.loads(result)
-                            if isinstance(parsed, list) and len(parsed) > 2:
-                                html = _inject_api_data_as_table(html, parsed)
-                                logger.info("Injected %d records from page.evaluate API call.", len(parsed))
-                                break
+                        api_url = base + api_path
+                        for method in ["POST", "GET"]:
+                            result = page.evaluate(
+                                """async ({url, method}) => {
+                                    try {
+                                        const opts = {method: method, credentials: 'include'};
+                                        if (method === 'POST') {
+                                            opts.headers = {
+                                                'Content-Type': 'application/json',
+                                                'X-Requested-With': 'XMLHttpRequest'
+                                            };
+                                        }
+                                        const resp = await fetch(url, opts);
+                                        if (!resp.ok) return null;
+                                        const text = await resp.text();
+                                        return text;
+                                    } catch(e) { return null; }
+                                }""",
+                                {"url": api_url, "method": method},
+                            )
+                            if result and result.strip().startswith("["):
+                                import json as _json
+                                parsed = _json.loads(result)
+                                if isinstance(parsed, list) and len(parsed) > 2:
+                                    html = _inject_api_data_as_table(html, parsed)
+                                    logger.info("page.evaluate %s %s → %d records", method, api_url, len(parsed))
+                                    break
                 except Exception:
                     pass
             status_code = response.status if response is not None else None
