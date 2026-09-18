@@ -1,0 +1,48 @@
+name: Build and Push to GreenNode
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Image tag'
+        required: false
+        default: 'latest'
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set image tag
+        id: tag
+        run: echo "TAG=${{ github.event.inputs.tag || 'latest' }}" >> $GITHUB_OUTPUT
+
+      - name: Build API image
+        run: |
+          docker build --platform linux/amd64 -f Dockerfile.api \
+            -t ${{ secrets.GN_REGISTRY_URL }}/web-extract-api:${{ steps.tag.outputs.TAG }} .
+
+      - name: Build UI image
+        run: |
+          docker build --platform linux/amd64 -f Dockerfile.ui \
+            -t ${{ secrets.GN_REGISTRY_URL }}/web-extract-ui:${{ steps.tag.outputs.TAG }} .
+
+      - name: Login to GreenNode Registry
+        run: |
+          echo "${{ secrets.GN_REGISTRY_PASS }}" | docker login ${{ secrets.GN_REGISTRY_URL }} \
+            -u "${{ secrets.GN_REGISTRY_USER }}" --password-stdin
+
+      - name: Push API image
+        run: docker push ${{ secrets.GN_REGISTRY_URL }}/web-extract-api:${{ steps.tag.outputs.TAG }}
+
+      - name: Push UI image
+        run: docker push ${{ secrets.GN_REGISTRY_URL }}/web-extract-ui:${{ steps.tag.outputs.TAG }}
+
+      - name: Summary
+        run: |
+          echo "### Deploy images ready" >> $GITHUB_STEP_SUMMARY
+          echo "- API: \`${{ secrets.GN_REGISTRY_URL }}/web-extract-api:${{ steps.tag.outputs.TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "- UI: \`${{ secrets.GN_REGISTRY_URL }}/web-extract-ui:${{ steps.tag.outputs.TAG }}\`" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "Next: Go to GreenNode Console → Create Agent Runtime" >> $GITHUB_STEP_SUMMARY
