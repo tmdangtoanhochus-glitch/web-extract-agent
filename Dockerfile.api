@@ -15,6 +15,8 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY requirements-auth.txt .
 RUN pip install --no-cache-dir -r requirements-auth.txt
+COPY requirements-runner.txt .
+RUN pip install --no-cache-dir -r requirements-runner.txt
 
 RUN playwright install --with-deps chromium
 
