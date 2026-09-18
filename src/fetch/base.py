@@ -68,6 +68,37 @@ class FetchEngine(ABC):
         raise NotImplementedError
 
 
+class HybridFetcher(FetchEngine):
+    """Thử httpx trước (nhanh); nếu fail (403/5xx/HTML quá nhỏ) → fallback
+    Playwright (chậm nhưng render JS + bypass block)."""
+
+    def __init__(self, primary: FetchEngine, fallback: FetchEngine, min_html: int = 2000):
+        self._primary = primary
+        self._fallback = fallback
+        self._min_html = min_html
+
+    def fetch(self, url: str) -> FetchResult:
+        result = self._primary.fetch(url)
+        need_fallback = (
+            not result.success
+            or result.html is None
+            or (result.status_code is not None and result.status_code in (403, 429) or (result.status_code is not None and result.status_code >= 500))
+            or len(result.html or "") < self._min_html
+        )
+        if need_fallback:
+            logger.info("httpx fail/empty cho %s — fallback Playwright.", url)
+            return self._fallback.fetch(url)
+        return result
+
+    def with_request_cookie(self, url: str, cookie: str) -> "HybridFetcher":
+        clone = HybridFetcher(self._primary, self._fallback, self._min_html)
+        if hasattr(self._primary, "with_request_cookie"):
+            clone._primary = self._primary.with_request_cookie(url, cookie)
+        if hasattr(self._fallback, "with_request_cookie"):
+            clone._fallback = self._fallback.with_request_cookie(url, cookie)
+        return clone
+
+
 def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 

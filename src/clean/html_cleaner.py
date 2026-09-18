@@ -22,7 +22,6 @@ _TAGS_TO_STRIP = (
     "footer",
     "header",
     "aside",
-    "form",
     "iframe",
     "svg",
     "button",

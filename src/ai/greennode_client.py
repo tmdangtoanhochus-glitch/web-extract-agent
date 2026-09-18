@@ -134,12 +134,17 @@ def _warn_if_base_url_missing_v1_suffix(base_url: str) -> None:
 
 def _build_user_prompt(markdown: str, field_descriptions: dict[str, str]) -> str:
     fields_desc = "\n".join(f"- {name}: {desc}" for name, desc in field_descriptions.items())
+    _MAX_MD = 8000
+    if len(markdown) > _MAX_MD:
+        markdown = markdown[:_MAX_MD] + "\n\n[... nội dung còn lại bị cắt để giới hạn thời gian xử lý]"
     return (
         f"Các field cần trích xuất:\n{fields_desc}\n\n"
         f"Nội dung trang (đã làm sạch, dạng Markdown):\n\"\"\"\n{markdown}\n\"\"\"\n\n"
         f"Trả về 1 JSON array, mỗi phần tử là 1 object với key là tên field, "
         f"value là object có dạng {{\"value\": ..., \"confidence\": ..., "
-        f"\"evidence\": ...}}. Nếu trang có nhiều bản ghi, trả về nhiều phần tử."
+        f"\"evidence\": ...}}. Trang có thể có NHIỀU bảng cùng cấu trúc — "
+        f"trích xuất TẤT CẢ bản ghi từ TẤT CẢ bảng, không bỏ sót. "
+        f"Tối đa 100 bản ghi."
     )
 
 
@@ -169,22 +174,41 @@ def _parse_json(content: str) -> Any:
 
 
 def _repair_truncated_json(content: str) -> Optional[str]:
-    """Cố gắng repair JSON array bị truncate: tìm } hoàn chỉnh cuối cùng,
-    cắt bỏ phần dở dang, đóng array bằng ]."""
+    """Repair JSON array bị truncate bằng cách scan tracking string state,
+    tìm } đóng record hoàn chỉnh cuối cùng (không nằm trong string)."""
     text = content.strip()
-    # Bỏ markdown fence nếu có
     if text.startswith("```"):
         text = re.sub(r"^```[a-z]*\n?", "", text)
         text = re.sub(r"\n?```$", "", text).strip()
     if not text.startswith("["):
         return None
-    # Tìm vị trí } hoàn chỉnh cuối cùng (kèm comma trước hoặc sau)
-    last_complete = text.rfind("}")
-    if last_complete <= 0:
+
+    in_string = False
+    escape = False
+    depth = 0
+    last_close = -1
+    for i, ch in enumerate(text):
+        if escape:
+            escape = False
+            continue
+        if ch == "\\":
+            escape = True
+            continue
+        if ch == '"':
+            in_string = not in_string
+            continue
+        if in_string:
+            continue
+        if ch == "{" or ch == "[":
+            depth += 1
+        elif ch == "}" or ch == "]":
+            depth -= 1
+            if ch == "}" and depth == 1:
+                last_close = i
+
+    if last_close <= 0:
         return None
-    truncated = text[:last_complete + 1]
-    # Đảm bảo kết thúc bằng , hoặc ] — nếu kết thúc bằng , thì bỏ comma
-    truncated = truncated.rstrip().rstrip(",")
+    truncated = text[:last_close + 1].rstrip().rstrip(",")
     return truncated + "]"
 
 

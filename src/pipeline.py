@@ -132,36 +132,9 @@ def ai_extract(
             )
             continue
 
-        # Cache chiến lược extract theo domain (CLAUDE.md mục 5): field đã
-        # từng được AI định vị trên domain này thì áp lại selector rule-based
-        # trước — chỉ gọi AI lại khi selector không còn khớp (site đổi cấu trúc).
-        # LƯU Ý: cache chỉ áp dụng đúng cho trang 1-record — trang nhiều record
-        # (nhiều <div class="quote"> lặp lại) mà có cache sẽ chỉ khớp ĐÚNG 1
-        # phần tử (selector cố định vị trí), khiến field đó bị "khoá" về 1 giá
-        # trị duy nhất thay vì để AI trả đủ N giá trị theo N record. Đây là
-        # giới hạn đã biết (xem docs/kien_audit/03 mục 6.1) — workaround: xoá
-        # cache (đổi dataset mới) nếu trang trước đó từng cào dạng 1-record.
-        cached_strategy = storage.get_extraction_strategy(domain, name)
-        cached_value = (
-            apply_selector(html, cached_strategy.selector) if cached_strategy is not None else None
-        )
-        if cached_value is not None:
-            logger.info(
-                "[%s] Field '%s' lấy được từ cache selector theo domain (%s), KHÔNG cần gọi AI.",
-                url, name, domain,
-            )
-            resolved_fields[name] = FieldExtraction(
-                value=cached_value,
-                confidence=0.9,
-                evidence=f"cached_selector:{cached_strategy.selector}={cached_value!r}",
-            )
-            continue
-
-        if cached_strategy is not None:
-            logger.info(
-                "Selector cache cho field '%s' trên domain %s không còn khớp — fallback sang AI.",
-                name, domain,
-            )
+        # Selector cache bị tạm thời skip — cache chỉ trả 1 value cho 1 field,
+        # nhưng trang có thể có nhiều records. Luôn gửi field còn lại cho AI
+        # để AI trả đủ số lượng records thực tế (xem docs/kien_audit/03 mục 6.1).
         remaining_descriptions[name] = description
 
     if remaining_descriptions:
@@ -184,16 +157,6 @@ def ai_extract(
             url, len(all_records),
             {name: fe.confidence for name, fe in all_records[0].items()} if all_records else {},
         )
-
-        # Cache selector cho field AI vừa định vị (dùng record đầu tiên —
-        # xem lưu ý về giới hạn cache ở trên).
-        if all_records:
-            for name, fe in all_records[0].items():
-                if fe.value in (None, ""):
-                    continue
-                selector = find_selector(html, fe.value)
-                if selector is not None:
-                    storage.save_extraction_strategy(domain, name, selector, sample_value=str(fe.value))
     else:
         logger.info(
             "Toàn bộ field của %s lấy được từ structured data/cache — bỏ qua AI.",

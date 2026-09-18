@@ -110,32 +110,33 @@ def plan_urls(url, options, today=None):
 
 def table_rows(html, options, first, last):
     tables = BeautifulSoup(html, "html.parser").select(options.table_selector)
-    if len(tables) != 1 or tables[0].name != "table":
-        raise TableError("table_selection", "Selector phải khớp đúng một bảng HTML")
+    if not tables or any(t.name != "table" for t in tables):
+        raise TableError("table_selection", "CSS selector phải khớp ít nhất 1 bảng HTML")
     rows = []
-    for tr in tables[0].find_all("tr"):
-        if tr.find_parent("table") is not tables[0]:
-            continue
-        cells = tr.find_all(["td", "th"], recursive=False)
-        if not cells or all(cell.name == "th" for cell in cells):
-            continue
-        if any(cell.get("rowspan", "1") != "1" or cell.get("colspan", "1") != "1" for cell in cells):
-            raise TableError("merged_cells", "Bảng có ô gộp; cần cấu hình nguồn bảng phẳng")
-        if max(options.columns.values()) > len(cells):
-            raise TableError("column_count", "Số cột cấu hình vượt số ô trong dòng")
-        data = {name: cells[index - 1].get_text(" ", strip=True) for name, index in options.columns.items()}
-        as_of = None
-        if options.date_field:
-            try:
-                parsed = datetime.strptime(data[options.date_field], options.date_format).date()
-            except (ValueError, KeyError):
-                raise TableError("date_format", "Ngày trong bảng không khớp định dạng đã chọn") from None
-            if first and not first <= parsed <= last:
+    for table in tables:
+        for tr in table.find_all("tr"):
+            if tr.find_parent("table") is not table:
                 continue
-            as_of = datetime.combine(parsed, time.min, timezone.utc)
-        rows.append((data, as_of))
-        if len(rows) > options.max_rows:
-            raise TableError("row_limit", "Bảng vượt giới hạn dòng; chia nhỏ nguồn hoặc tăng max_rows")
+            cells = tr.find_all(["td", "th"], recursive=False)
+            if not cells or all(cell.name == "th" for cell in cells):
+                continue
+            if any(cell.get("rowspan", "1") != "1" or cell.get("colspan", "1") != "1" for cell in cells):
+                raise TableError("merged_cells", "Bảng có ô gộp; cần cấu hình nguồn bảng phẳng")
+            if max(options.columns.values()) > len(cells):
+                raise TableError("column_count", "Số cột cấu hình vượt số ô trong dòng")
+            data = {name: cells[index - 1].get_text(" ", strip=True) for name, index in options.columns.items()}
+            as_of = None
+            if options.date_field:
+                try:
+                    parsed = datetime.strptime(data[options.date_field], options.date_format).date()
+                except (ValueError, KeyError):
+                    raise TableError("date_format", "Ngày trong bảng không khớp định dạng đã chọn") from None
+                if first and not first <= parsed <= last:
+                    continue
+                as_of = datetime.combine(parsed, time.min, timezone.utc)
+            rows.append((data, as_of))
+            if len(rows) > options.max_rows:
+                raise TableError("row_limit", "Bảng vượt giới hạn dòng; chia nhỏ nguồn hoặc tăng max_rows")
     return rows
 
 
@@ -211,13 +212,7 @@ def run_bulk(*, url, field_descriptions, options, fetcher, ai_client, storage,
     sources = {source.source_url for source in storage.list_sources(dataset_id, active_only=True)} if dataset else set()
     for index, (target, first, last) in indexed_plans:
         if checkpoint:
-            # Release the batch serialization lock while a user pauses so other
-            # users and scheduled crawls can proceed. Refresh dedup after reacquiring.
-            _bulk_lock.release()
-            try:
-                proceed = checkpoint()
-            finally:
-                _bulk_lock.acquire()
+            proceed = checkpoint()
             if not proceed:
                 cancelled = True
                 break
@@ -261,7 +256,8 @@ def run_bulk(*, url, field_descriptions, options, fetcher, ai_client, storage,
                         storage.save_record(dataset_id, target, data, digest, confidence=1.0, as_of=as_of)
                         seen.add(digest)
                     else:
-                        write_record(file_path=file_path, record={"source_url": target, "data": data,
+                        write_record(file_path=file_path, record={**data,
+                                     "source_url": target,
                                      "crawled_at": datetime.now(timezone.utc).isoformat()},
                                      write_mode="append", field_names=list(field_descriptions))
                     saved += 1

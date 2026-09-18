@@ -13,9 +13,10 @@ st.caption("Đăng nhập chỉ dành cho Runner. Chức năng crawl ở trang c
 
 
 def api(method, path, body=None, binary=False):
-    headers = {"Authorization": "Bearer " + st.session_state.get("runner_session", "")}
+    session = st.session_state.get("runner_session", "")
+    headers = {"Authorization": f"Bearer {session}"} if session else {}
     try:
-        with httpx.Client(base_url=API, headers=headers, timeout=30) as client:
+        with httpx.Client(base_url=API, headers=headers, timeout=300) as client:
             response = client.request(method, "/runner" + path, json=body)
         if response.status_code == 401:
             for key in list(st.session_state):
@@ -32,10 +33,18 @@ def api(method, path, body=None, binary=False):
             return None
         if response.is_error:
             st.error(f"Yêu cầu không thành công ({response.status_code}). Kiểm tra cấu hình và quyền truy cập.")
+            try:
+                st.caption(f"Chi tiết: {response.text[:500]}")
+            except Exception:
+                pass
             return None
         return response.content if binary else response.json()
-    except httpx.HTTPError:
-        st.error("Không kết nối được backend.")
+    except httpx.HTTPError as exc:
+        st.error(f"Lỗi kết nối backend: {type(exc).__name__}: {exc}")
+        st.caption(f"API: {API} | Endpoint: /runner{path}")
+        return None
+    except Exception as exc:
+        st.error(f"Lỗi không xác định: {type(exc).__name__}: {exc}")
         return None
 
 

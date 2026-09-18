@@ -36,7 +36,7 @@ _CSS = """
 <style>
 :root {
   --msb-orange:#FF671F; --msb-red:#ED1C24; --msb-sun:#FFB81C;
-  --msb-border:#F0E2DA; --msb-green:#1BA672;
+  --msb-border:#F0E2DA; --msb-green:#1BA672; --msb-blue:#2E6FE7;
 }
 .stApp { background:#FBF6F3; }
 .mp-hero {
@@ -53,13 +53,28 @@ _CSS = """
   background:#fff; border:1px solid var(--msb-border); border-radius:14px;
   padding:18px 20px; margin-bottom:14px;
 }
+.mp-section-label {
+  font-size:14px; font-weight:600; color:#333; margin:12px 0 6px 0;
+  padding-bottom:4px; border-bottom:2px solid var(--msb-border);
+}
+.mp-hint {
+  background:#F0F7FF; border-left:3px solid var(--msb-blue); padding:8px 12px;
+  border-radius:0 6px 6px 0; font-size:13px; color:#444; margin:8px 0;
+}
 div.stButton > button[kind="primary"] {
   background:linear-gradient(135deg,var(--msb-red),var(--msb-orange)); border:none;
+}
+div.stButton > button[kind="secondary"]:hover {
+  border-color:var(--msb-orange); color:var(--msb-orange);
 }
 .mp-status-saved { color:var(--msb-green); font-weight:700; }
 .mp-status-unchanged { color:#8a8380; font-weight:700; }
 .mp-status-warn { color:var(--msb-sun); font-weight:700; }
 .mp-status-error { color:var(--msb-red); font-weight:700; }
+.mp-step-active {
+  background:linear-gradient(135deg,var(--msb-red),var(--msb-orange)) !important;
+  color:#fff !important;
+}
 </style>
 """
 st.markdown(_CSS, unsafe_allow_html=True)
@@ -69,6 +84,13 @@ _WRITE_MODE_LABELS = {
     "Ghi thêm": "append",
     "Luôn tạo file mới": "new_file",
     "Ghi đè theo trường": "overwrite_row",
+}
+
+_FILE_FORMATS = {
+    "Excel (.xlsx)": "xlsx",
+    "CSV (.csv)": "csv",
+    "JSON (.json)": "json",
+    "Parquet (.parquet)": "parquet",
 }
 
 
@@ -81,6 +103,8 @@ def _init_state() -> None:
         "selected_dataset_id": None,
         "urls": [],
         "fields": [{"name": "", "desc": "", "is_image": False}],
+        "file_name": "",
+        "file_format": "Excel (.xlsx)",
         "file_path": "",
         "write_mode_label": "Ghi thêm",
         "key_field": None,
@@ -97,7 +121,7 @@ _init_state()
 
 
 def _client() -> httpx.Client:
-    return httpx.Client(base_url=API_BASE_URL, timeout=600.0)
+    return httpx.Client(base_url=API_BASE_URL, timeout=900.0)
 
 
 def _api_get(path: str) -> Optional[Any]:
@@ -252,11 +276,40 @@ def _render_step1() -> None:
                 st.session_state.selected_dataset_id = chosen["dataset_id"]
                 st.caption("Schema hiện có: " + ", ".join(chosen["schema_signature"]))
 
-    st.markdown("**Đường link website (URL)**")
+    st.markdown('<div class="mp-section-label">Đường link website (URL)</div>', unsafe_allow_html=True)
     new_url = st.text_input("URL cần cào", key="new_url_input", placeholder="https://example.com/gia-vang")
     if st.button("+ Thêm link") and new_url.strip():
         if new_url.strip() not in st.session_state.urls:
             st.session_state.urls.append(new_url.strip())
+
+    with st.expander("Phân trang — cào nhiều page liên tiếp", expanded=False):
+        st.caption("Dùng `{page}` làm số trang trong URL. VD: `https://books.toscrape.com/catalogue/page-{page}.html`")
+        st.markdown(
+            '<div style="background:#F0F7FF;border-left:3px solid #2E6FE7;padding:6px 10px;'
+            'border-radius:0 6px 6px 0;font-size:12px;margin:4px 0 8px 0;">'
+            '💡 Cần khoảng ngày hoặc kéo theo batch? Bật <b>"Kéo nhiều lượt / kéo bảng"</b> '
+            'ở Bước 3 để dùng date range, table mode, progress và pause.</div>',
+            unsafe_allow_html=True
+        )
+        col_p1, col_p2, col_p3 = st.columns([6, 2, 2])
+        with col_p1:
+            page_url_pattern = st.text_input("URL pattern", key="page_url_pattern",
+                placeholder="https://example.com/page-{page}.html")
+        with col_p2:
+            page_start = st.number_input("Từ page", min_value=1, value=1, key="page_start")
+        with col_p3:
+            page_end = st.number_input("Đến page", min_value=1, value=10, key="page_end")
+        if st.button("+ Sinh URL theo page", key="gen_page_urls") and page_url_pattern.strip():
+            generated = [page_url_pattern.replace("{page}", str(p))
+                         for p in range(int(page_start), int(page_end) + 1)]
+            added = 0
+            for g in generated:
+                if g not in st.session_state.urls:
+                    st.session_state.urls.append(g)
+                    added += 1
+            if added:
+                st.success(f"Đã thêm {added} URL (page {int(page_start)}–{int(page_end)}).")
+                st.rerun()
 
     for url in list(st.session_state.urls):
         c1, c2 = st.columns([10, 1])
@@ -327,12 +380,37 @@ def _render_step2() -> None:
 
     if is_file_mode:
         st.markdown("**Cấu hình lưu file**")
-        st.session_state.file_path = st.text_input(
-            "Tên file (trong thư mục data/exports/)",
-            value=st.session_state.file_path,
-            key="file_path_input",
-            placeholder="gia-vang.json",
+        fc1, fc2 = st.columns([3, 2])
+        with fc1:
+            st.session_state.file_name = st.text_input(
+                "Tên file *",
+                value=st.session_state.file_name,
+                key="file_name_input",
+                placeholder="VD: gia-vang",
+            )
+        with fc2:
+            st.session_state.file_format = st.selectbox(
+                "Định dạng",
+                list(_FILE_FORMATS.keys()),
+                key="file_format_select",
+                index=list(_FILE_FORMATS.keys()).index(st.session_state.file_format),
+            )
+        fmt_ext = _FILE_FORMATS[st.session_state.file_format]
+        st.session_state.file_path = f"{st.session_state.file_name.strip()}.{fmt_ext}"
+
+        _default_download = os.path.join(os.path.expanduser("~"), "Downloads")
+        st.session_state.custom_save_path = st.text_input(
+            "Đường dẫn lưu file",
+            value=st.session_state.get("custom_save_path", ""),
+            key="custom_save_path_input",
+            placeholder=f"Để trống → lưu tại: {_default_download}",
         )
+        _save_dir = st.session_state.custom_save_path.strip() or _default_download
+        if st.session_state.file_name.strip():
+            st.markdown(
+                f'<div class="mp-hint">📂 File sẽ lưu tại: <code>{_save_dir}\\{st.session_state.file_path}</code></div>',
+                unsafe_allow_html=True,
+            )
         st.session_state.write_mode_label = st.selectbox(
             "Cách ghi", list(_WRITE_MODE_LABELS.keys()), key="write_mode_select",
             index=list(_WRITE_MODE_LABELS.keys()).index(st.session_state.write_mode_label),
@@ -358,7 +436,7 @@ def _render_step2() -> None:
         cleaned = [f for f in st.session_state.fields if f["name"].strip() and f["desc"].strip()]
         if not cleaned:
             st.warning("Cần ít nhất 1 field có đủ tên và mô tả.")
-        elif is_file_mode and not st.session_state.file_path.strip():
+        elif is_file_mode and not st.session_state.file_name.strip():
             st.warning("Cần nhập tên file.")
         elif (
             is_file_mode
@@ -413,7 +491,17 @@ def _render_step3() -> None:
             st.session_state.run_file_paths = []
         dataset_id = st.session_state.selected_dataset_id
         pending_bodies = []
-        for url in st.session_state.urls:
+        total_urls = len(st.session_state.urls)
+        status_box = st.empty()
+        progress_bar = st.progress(0.0)
+        for i, url in enumerate(st.session_state.urls):
+            status_box.markdown(
+                f'<div style="padding:8px 16px;background:#FFF1E8;border-radius:8px;'
+                f'border-left:4px solid #FF671F;margin-bottom:4px;">'
+                f'🔄 <b>Đang crawl</b> — URL {i+1}/{total_urls}'
+                f'<br><span style="color:#666;font-size:13px;">{escape(url)}</span>'
+                f'</div>', unsafe_allow_html=True
+            )
             body: dict[str, Any] = {
                 "url": url, "field_descriptions": field_descriptions, "image_fields": image_fields,
             }
@@ -461,6 +549,22 @@ def _render_step3() -> None:
                 if result["file_path"] not in st.session_state.run_file_paths:
                     st.session_state.run_file_paths.append(result["file_path"])
             st.session_state.run_log.append({"url": url, **result, "_retry_config": dict(body)})
+            progress_bar.progress((i + 1) / total_urls)
+        _errors = sum(1 for e in st.session_state.run_log if e.get("status") in ("error", "fetch_failed", "extract_failed"))
+        if _errors == 0:
+            status_box.markdown(
+                f'<div style="padding:8px 16px;background:#E8F5E9;border-radius:8px;'
+                f'border-left:4px solid #1BA672;margin-bottom:4px;">'
+                f'✅ <b>Hoàn thành</b> — {total_urls} URL đã xử lý'
+                f'</div>', unsafe_allow_html=True
+            )
+        else:
+            status_box.markdown(
+                f'<div style="padding:8px 16px;background:#FFF3E0;border-radius:8px;'
+                f'border-left:4px solid #FFB81C;margin-bottom:4px;">'
+                f'⚠ <b>Hoàn thành với {_errors} lỗi</b> — {total_urls} URL đã xử lý'
+                f'</div>', unsafe_allow_html=True
+            )
         if submitted:
             st.session_state.run_dataset_id = dataset_id
             if pending_bodies:
@@ -498,19 +602,83 @@ def _render_step3() -> None:
             if "requests" in entry:
                 st.write({key: entry.get(key) for key in ("requests", "saved", "skipped", "failed")})
                 st.dataframe(entry.get("results", []))
-            if entry.get("data"):
-                with st.expander(f"Dữ liệu trích xuất — {entry['url']}"):
-                    st.json(entry["data"])
+            if entry.get("data") or entry.get("file_path") or entry.get("dataset_id"):
+                with st.expander(f"Preview dữ liệu — {entry['url']}", expanded=True):
+                    _PREVIEW_MAX = 15
+                    _shown = False
+                    if entry.get("file_path"):
+                        content = _api_download(f"/exports/{entry['file_path']}")
+                        if content:
+                            try:
+                                import pandas as _pd
+                                import io as _io
+                                ext = entry["file_path"].lower().rsplit(".", 1)[-1]
+                                if ext == "json":
+                                    import json as _json
+                                    records = _json.loads(content.decode("utf-8"))
+                                    if isinstance(records, list) and records:
+                                        df = _pd.DataFrame(records)
+                                        st.dataframe(df.head(_PREVIEW_MAX), use_container_width=True)
+                                        if len(df) > _PREVIEW_MAX:
+                                            st.caption(f"Hiển thị {_PREVIEW_MAX}/{len(df)} dòng — tải file để xem đầy đủ")
+                                        _shown = True
+                                elif ext == "csv":
+                                    df = _pd.read_csv(_io.BytesIO(content), encoding="utf-8-sig")
+                                    st.dataframe(df.head(_PREVIEW_MAX), use_container_width=True)
+                                    if len(df) > _PREVIEW_MAX:
+                                        st.caption(f"Hiển thị {_PREVIEW_MAX}/{len(df)} dòng — tải file để xem đầy đủ")
+                                    _shown = True
+                                elif ext == "xlsx":
+                                    df = _pd.read_excel(_io.BytesIO(content), engine="openpyxl")
+                                    st.dataframe(df.head(_PREVIEW_MAX), use_container_width=True)
+                                    if len(df) > _PREVIEW_MAX:
+                                        st.caption(f"Hiển thị {_PREVIEW_MAX}/{len(df)} dòng — tải file để xem đầy đủ")
+                                    _shown = True
+                                elif ext == "parquet":
+                                    df = _pd.read_parquet(_io.BytesIO(content), engine="pyarrow")
+                                    st.dataframe(df.head(_PREVIEW_MAX), use_container_width=True)
+                                    if len(df) > _PREVIEW_MAX:
+                                        st.caption(f"Hiển thị {_PREVIEW_MAX}/{len(df)} dòng — tải file để xem đầy đủ")
+                                    _shown = True
+                            except Exception:
+                                pass
+                    if not _shown and entry.get("dataset_id"):
+                        ds_records = _api_get(f"/datasets/{entry['dataset_id']}/records?limit={_PREVIEW_MAX}") or []
+                        if ds_records:
+                            import pandas as _pd
+                            rows = [{"source_url": r.get("source_url"), "confidence": r.get("confidence"),
+                                     **r.get("data", {})} for r in ds_records]
+                            st.dataframe(_pd.DataFrame(rows), use_container_width=True)
+                            _shown = True
+                    if not _shown and entry.get("data"):
+                        import pandas as _pd
+                        st.dataframe(_pd.DataFrame([entry["data"]]), use_container_width=True)
 
     if st.session_state.run_file_paths:
         st.markdown("**File kết quả**")
+        _default_download = os.path.join(os.path.expanduser("~"), "Downloads")
+        _save_dir = st.session_state.get("custom_save_path", "").strip() or _default_download
         for file_path in st.session_state.run_file_paths:
+            ext = file_path.lower().rsplit(".", 1)[-1] if "." in file_path else "json"
+            mime_map = {"json": "application/json", "csv": "text/csv",
+                        "xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                        "parquet": "application/octet-stream"}
+            mime = mime_map.get(ext, "application/octet-stream")
             st.markdown(f"`{file_path}`")
             content = _api_download(f"/exports/{file_path}")
             if content is not None:
+                _file_name = file_path.split("/")[-1]
+                _dest = os.path.join(_save_dir, _file_name)
+                try:
+                    os.makedirs(_save_dir, exist_ok=True)
+                    with open(_dest, "wb") as f:
+                        f.write(content)
+                    st.success(f"Đã lưu: {_dest}")
+                except Exception as e:
+                    st.warning(f"Không lưu được vào {_dest}: {e}")
                 st.download_button(
-                    f"⬇ Tải {file_path}", data=content, file_name=file_path.split("/")[-1],
-                    mime="application/json", key=f"dl_{file_path}",
+                    f"⬇ Tải {_file_name}", data=content, file_name=_file_name,
+                    mime=mime, key=f"dl_{file_path}",
                 )
 
     retry_panel(_api_post)
@@ -626,18 +794,22 @@ def _render_step4() -> None:
             for r in records
         ]
         st.dataframe(table_rows, use_container_width=True)
-        st.download_button(
-            "⬇ Tải CSV trang hiện tại",
-            data=_records_to_csv(records),
-            file_name=f"{dataset_id}.csv",
-            mime="text/csv",
-        )
-        st.download_button(
-            "⬇ Tải XLSX trang hiện tại",
-            data=_records_to_xlsx(records),
-            file_name=f"{dataset_id}.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+        st.markdown('<div class="mp-section-label">Tải dữ liệu</div>', unsafe_allow_html=True)
+        dl1, dl2 = st.columns(2)
+        with dl1:
+            st.download_button(
+                "⬇ Tải CSV",
+                data=_records_to_csv(records),
+                file_name=f"{dataset_id}.csv",
+                mime="text/csv",
+            )
+        with dl2:
+            st.download_button(
+                "⬇ Tải XLSX",
+                data=_records_to_xlsx(records),
+                file_name=f"{dataset_id}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            )
         with st.expander("Evidence (đoạn gốc AI trích xuất)"):
             for r in records:
                 if r.get("evidence"):
@@ -807,9 +979,16 @@ def _render_step5() -> None:
     file_path, write_mode, key_field = "", "append", None
     if is_schedule_file_mode:
         st.markdown("**Cấu hình lưu file**")
-        file_path = st.text_input(
-            "Tên file (trong thư mục data/exports/)", key="schedule_file_path", placeholder="gia-vang.json"
-        )
+        sfc1, sfc2 = st.columns([3, 2])
+        with sfc1:
+            sched_file_name = st.text_input(
+                "Tên file", key="schedule_file_name", placeholder="VD: gia-vang"
+            )
+        with sfc2:
+            sched_file_format_label = st.selectbox(
+                "Định dạng", list(_FILE_FORMATS.keys()), key="schedule_file_format_select"
+            )
+        file_path = f"{sched_file_name.strip()}.{_FILE_FORMATS[sched_file_format_label]}"
         write_mode_label = st.selectbox(
             "Cách ghi", list(_WRITE_MODE_LABELS.keys()), key="schedule_write_mode_select"
         )
@@ -846,7 +1025,7 @@ def _render_step5() -> None:
             st.warning("Cần khai báo ít nhất 1 field có đủ tên và mô tả.")
         elif missing:
             st.warning("Cần mô tả cho field: " + ", ".join(missing))
-        elif is_schedule_file_mode and not file_path.strip():
+        elif is_schedule_file_mode and not sched_file_name.strip():
             st.warning("Cần nhập tên file.")
         elif is_schedule_file_mode and write_mode == "overwrite_row" and not key_field:
             st.warning("Cần chọn trường khoá cho cách ghi 'Ghi đè theo trường'.")

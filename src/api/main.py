@@ -17,6 +17,7 @@ import dataclasses
 import logging
 import hashlib
 import json
+import os
 from contextlib import asynccontextmanager
 from typing import AsyncIterator, Optional, Literal
 
@@ -34,7 +35,7 @@ from .crawl_reports import create_report_router, context, exception_frames
 from ..ai.base import AIClient
 from ..ai.greennode_client import GreenNodeChatClient
 from ..config import load_settings
-from ..fetch.base import FetchEngine
+from ..fetch.base import FetchEngine, HybridFetcher
 from ..fetch.httpx_fetcher import HttpxFetcher
 from ..pipeline import run_crawl_job, run_file_crawl_job
 from ..scheduler import CrawlScheduler, validate_trigger
@@ -579,11 +580,24 @@ def _build_default_app() -> FastAPI:
     if not settings.fetch_respect_robots_txt:
         from ..fetch.base import AllowAllRobotsChecker
         robots_checker = AllowAllRobotsChecker()
-    fetcher = HttpxFetcher(
+    chrome_path = os.environ.get("CHROME_EXECUTABLE_PATH", "")
+    http_fetcher = HttpxFetcher(
         user_agent=settings.fetch_user_agent,
         delay_seconds=settings.fetch_default_delay_seconds,
         robots_checker=robots_checker,
     )
+    if chrome_path:
+        from ..fetch.playwright_fetcher import PlaywrightFetcher
+        pw_fetcher = PlaywrightFetcher(
+            user_agent=settings.fetch_user_agent,
+            delay_seconds=settings.fetch_default_delay_seconds,
+            robots_checker=robots_checker,
+            timeout_seconds=60.0,
+            chrome_executable_path=chrome_path,
+        )
+        fetcher = HybridFetcher(http_fetcher, pw_fetcher)
+    else:
+        fetcher = http_fetcher
     ai_client = GreenNodeChatClient(
         base_url=settings.ai_base_url,
         api_key=settings.ai_api_key,

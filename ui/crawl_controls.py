@@ -47,6 +47,14 @@ def options_controls(fields):
                "Chỉ lấy được lịch sử mà nguồn còn cung cấp. Tối đa 100 lượt mỗi đợt.")
     mode = st.radio("Kiểu dữ liệu", ["Trường trên mỗi trang", "Bảng HTML"], horizontal=True)
     options = {"mode": "table" if mode == "Bảng HTML" else "fields"}
+    if options["mode"] == "fields":
+        st.markdown(
+            '<div style="background:#FFF3E0;border-left:3px solid #FFB81C;padding:8px 12px;'
+            'border-radius:0 6px 6px 0;font-size:13px;margin:8px 0;">'
+            '💡 <b>Đề xuất:</b> Nếu trang có bảng HTML (table), chọn <b>"Bảng HTML"</b> để kéo '
+            'đầy đủ tất cả bảng nhanh hơn (không cần AI). AI mode có thể bỏ sót records '
+            'trên trang có nhiều bảng ẩn (tabs).</div>', unsafe_allow_html=True
+        )
     if st.checkbox("Giới hạn khoảng ngày"):
         first = st.date_input("Từ ngày (bao gồm)", value=date.today() - timedelta(days=7))
         last = st.date_input("Đến ngày (bao gồm)", value=date.today())
