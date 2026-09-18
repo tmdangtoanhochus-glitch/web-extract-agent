@@ -1,0 +1,7 @@
+# Ép LF cho file chạy trong container Linux (Docker) — máy dev Windows mặc định
+# core.autocrlf=true tự đổi LF thành CRLF lúc checkout, khiến /bin/sh trong
+# container đọc "set -e\r" ra lỗi "Illegal option -" (thấy khi build UI image).
+# Không phụ thuộc core.autocrlf của từng máy nữa.
+*.sh text eol=lf
+Dockerfile* text eol=lf
+*.conf text eol=lf
