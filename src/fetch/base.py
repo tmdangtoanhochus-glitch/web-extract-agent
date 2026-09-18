@@ -72,10 +72,11 @@ class HybridFetcher(FetchEngine):
     """Thử httpx trước (nhanh); nếu fail (403/5xx/HTML quá nhỏ) → fallback
     Playwright (chậm nhưng render JS + bypass block)."""
 
-    def __init__(self, primary: FetchEngine, fallback: FetchEngine, min_html: int = 2000):
+    def __init__(self, primary: FetchEngine, fallback: FetchEngine, min_html: int = 2000, min_markdown_ratio: float = 0.01):
         self._primary = primary
         self._fallback = fallback
         self._min_html = min_html
+        self._min_markdown_ratio = min_markdown_ratio
 
     def fetch(self, url: str) -> FetchResult:
         result = self._primary.fetch(url)
@@ -85,6 +86,15 @@ class HybridFetcher(FetchEngine):
             or (result.status_code is not None and result.status_code in (403, 429) or (result.status_code is not None and result.status_code >= 500))
             or len(result.html or "") < self._min_html
         )
+        if not need_fallback and result.html:
+            try:
+                from ..clean.html_cleaner import clean_html
+                cleaned = clean_html(result.html)
+                if len(result.html) > 10000 and len(cleaned.markdown) < len(result.html) * self._min_markdown_ratio:
+                    logger.info("HTML lớn nhưng markdown quá ngắn cho %s — JS-heavy, fallback Playwright.", url)
+                    need_fallback = True
+            except Exception:
+                pass
         if need_fallback:
             logger.info("httpx fail/empty cho %s — fallback Playwright.", url)
             return self._fallback.fetch(url)
