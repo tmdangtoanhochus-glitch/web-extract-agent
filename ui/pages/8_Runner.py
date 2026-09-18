@@ -48,6 +48,28 @@ def api(method, path, body=None, binary=False):
         return None
 
 
+def _feedback_post(path, body):
+    try:
+        with httpx.Client(base_url=API, timeout=60) as client:
+            response = client.post(path, json=body)
+        data = response.json()
+        if response.status_code >= 400:
+            return {"_http_error": response.status_code, "detail": data.get("detail")}
+        return data
+    except (httpx.HTTPError, ValueError):
+        return None
+
+
+try:
+    from ui.feedback import feedback_panel
+except ModuleNotFoundError as exc:
+    if exc.name != "ui":
+        raise
+    from feedback import feedback_panel
+with st.sidebar:
+    feedback_panel(_feedback_post, "runner")
+
+
 if "runner_session" not in st.session_state:
     with st.form("runner_login", clear_on_submit=True):
         username = st.text_input("Username")

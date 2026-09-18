@@ -19,7 +19,7 @@ def test_cookie_and_report_after_rendering_error(monkeypatch):
                                       headers={"X-Crawl-Request-ID": "00000000-0000-0000-0000-000000000001"})
             return httpx.Response(201, json={"report_id": "r1"})
     monkeypatch.setattr(httpx, "Client", Client)
-    app = AppTest.from_file(str(PAGE))
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
     app.session_state["step"] = 3
     app.session_state["urls"] = ["https://example.test/table?query=synthetic"]
     app.session_state["fields"] = [{"name": "price", "desc": "Price"}]
@@ -51,7 +51,7 @@ def test_bulk_handoff_preserves_dataset_columns_and_rolling_dates(monkeypatch):
             calls.append((path, json))
             return httpx.Response(200, json={"job_id": "j1"})
     monkeypatch.setattr(httpx, "Client", Client)
-    app = AppTest.from_file(str(PAGE))
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
     app.session_state["step"] = 5
     app.session_state["last_crawl_config"] = {
         "url": "https://example.test/?from={start}&to={end}", "dataset_id": "history",
@@ -81,7 +81,7 @@ def test_preview_and_report_work_without_a_ui_exception(monkeypatch):
                     headers={"X-Crawl-Request-ID": "00000000-0000-0000-0000-000000000002"})
             return httpx.Response(201, json={"report_id": "r2"})
     monkeypatch.setattr(httpx, "Client", Client)
-    app = AppTest.from_file(str(PAGE))
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
     app.session_state["step"] = 3
     app.session_state["urls"] = ["https://example.test/table"]
     app.session_state["fields"] = [{"name": "price", "desc": "Price"}]
@@ -105,13 +105,15 @@ def test_retry_uses_original_config_and_fresh_cookie_without_retaining_it(monkey
         def __init__(self, **kwargs): pass
         def __enter__(self): return self
         def __exit__(self, *args): pass
+        def get(self, path, **kwargs):
+            return httpx.Response(200, json=[], request=httpx.Request("GET", "http://test"))
         def post(self, path, json):
             calls.append((path, dict(json)))
             return httpx.Response(200, json={"status": "completed", "request_id": "r-new",
                 "dataset_id": "d1", "requests": 1, "saved": 1, "failed": 0, "skipped": 0,
                 "results": [{"index": 2, "status": "saved"}]}, headers={"X-Crawl-Request-ID": "r-new"})
     monkeypatch.setattr(httpx, "Client", Client)
-    app = AppTest.from_file(str(PAGE))
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
     app.session_state["step"] = 3
     app.session_state["urls"] = ["https://changed.test/"]
     app.session_state["fields"] = [{"name": "changed", "desc": "Changed"}]
@@ -121,6 +123,7 @@ def test_retry_uses_original_config_and_fresh_cookie_without_retaining_it(monkey
             "field_descriptions": {"id": "Identifier"}, "dataset_name": "History",
             "crawl_options": {"mode": "table", "pages": 2, "columns": {"id": 1}}}}]
     app.run()
+    assert not app.exception, [e.value for e in app.exception]
     next(w for w in app.text_input if w.label == "Cookie mới cho nguồn này (nếu cần)").set_value("session=synthetic")
     next(w for w in app.button if w.label == "Chạy lại lượt lỗi").click().run()
     assert not app.exception
@@ -146,7 +149,7 @@ def test_export_all_is_explicit_and_cached_file_hidden_when_filter_changes(monke
                 return httpx.Response(200, content=b"data.id\r\n1\r\n", request=request)
             return httpx.Response(200, json=[], request=request)
     monkeypatch.setattr(httpx, "Client", Client)
-    app = AppTest.from_file(str(PAGE))
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
     app.session_state["step"] = 4
     app.run()
     assert not app.exception and not any("export.csv" in p for p in calls)
@@ -198,7 +201,7 @@ def test_background_submission_and_pause_resume_controls(monkeypatch):
                              "request_id": "00000000-0000-0000-0000-000000000001"}},
                 request=httpx.Request("GET", "http://test" + path))
     monkeypatch.setattr(httpx, "Client", Client)
-    app = AppTest.from_file(str(PAGE))
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
     app.session_state["step"] = 3
     app.session_state["urls"] = ["https://example.test/?page={page}"]
     app.session_state["fields"] = [{"name": "id", "desc": "Identifier"}]
@@ -233,7 +236,7 @@ def test_schedule_pause_and_timing_edit_do_not_change_crawl_config(monkeypatch):
             job.update(json)
             return httpx.Response(200, json=job)
     monkeypatch.setattr(httpx, "Client", Client)
-    app = AppTest.from_file(str(PAGE))
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
     app.session_state["step"] = 5
     app.run()
     next(w for w in app.button if w.label == "Tạm dừng lịch").click().run()

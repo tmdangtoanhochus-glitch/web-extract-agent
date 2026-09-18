@@ -94,6 +94,12 @@ Chỉ dùng phiên bạn được phép truy cập, qua kết nối HTTPS khi tr
             origins = sorted({f"{urlsplit(url).scheme}://{urlsplit(url).netloc}" for url in urls})
             origin = st.selectbox("Nguồn được dùng cookie", origins) if origins else None
             cookie = st.text_input("Cookie cho lượt kéo", type="password")
+        with st.expander("robots.txt (mặc định: luôn tôn trọng)"):
+            st.warning("Hệ thống mặc định KIỂM TRA robots.txt và bỏ qua trang bị chặn. Chỉ bật bỏ qua khi "
+                       "bạn là chủ website hoặc có sự cho phép. Hành động này chỉ áp dụng cho lượt kéo này, "
+                       "và được ghi log kèm lý do.")
+            st.checkbox("Bỏ qua robots.txt cho lượt kéo này", key="ignore_robots")
+            st.text_input("Lý do bỏ qua (bắt buộc nếu bật)", key="ignore_robots_reason")
         submitted = st.form_submit_button("🚀 Chạy crawl", type="primary", disabled=busy)
         preview = st.form_submit_button("Xem trước đợt kéo", disabled=not bulk_enabled or busy)
         st.caption("Xem trước bảng chỉ tải trang đầu, không lưu record. Cookie được xóa sau mỗi lần gửi; cần dán lại khi chạy thật.")

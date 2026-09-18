@@ -18,7 +18,7 @@ from typing import Any, Optional, Protocol
 from playwright.sync_api import Error as PlaywrightError
 from playwright.sync_api import sync_playwright
 
-from .base import AllowAllRobotsChecker, FetchEngine, FetchResult, RobotsChecker, domain_of, utcnow
+from .base import FetchEngine, OverrideRobotsChecker, FetchResult, RobotsChecker, domain_of, utcnow
 from .rate_limiter import DomainRateLimiter
 from .robots import HttpRobotsChecker
 
@@ -65,7 +65,7 @@ class PlaywrightFetcher(FetchEngine):
         self._user_agent = user_agent
         self._timeout_seconds = timeout_seconds
         self._wait_until = wait_until
-        self._robots_checker = robots_checker or AllowAllRobotsChecker()
+        self._robots_checker = robots_checker or HttpRobotsChecker()
         self._rate_limiter = DomainRateLimiter(delay_seconds)
         self._injected_browser = browser
         self._chrome_executable_path = chrome_executable_path
@@ -77,11 +77,19 @@ class PlaywrightFetcher(FetchEngine):
             user_agent=self._user_agent,
             timeout_seconds=self._timeout_seconds,
             wait_until=self._wait_until,
-            delay_seconds=0.0,
+            robots_checker=self._robots_checker,
             chrome_executable_path=self._chrome_executable_path,
         )
+        clone._rate_limiter = self._rate_limiter
         clone._cookie_header = cookie
         clone._cookie_origin = url
+        return clone
+
+    def with_robots_ignored(self, domain: str, reason: str) -> "PlaywrightFetcher":
+        """Bản sao dùng riêng cho 1 request: bỏ qua robots.txt của đúng `domain`."""
+        import copy
+        clone = copy.copy(self)
+        clone._robots_checker = OverrideRobotsChecker(self._robots_checker, domain, reason)
         return clone
 
     def fetch(self, url: str) -> FetchResult:
@@ -155,51 +163,19 @@ class PlaywrightFetcher(FetchEngine):
             response = page.goto(
                 url, timeout=self._timeout_seconds * 1000, wait_until=self._wait_until
             )
-            import time as _time
-            _time.sleep(8)
+            # Chờ AJAX xong theo trạng thái mạng thay vì sleep cố định 8 giây/trang;
+            # quá hạn thì dùng luôn DOM hiện có.
+            try:
+                page.wait_for_load_state("networkidle", timeout=8000)
+            except PlaywrightError:
+                pass
             html = page.content()
             if api_json_data:
                 largest = max(api_json_data, key=len)
                 html = _inject_api_data_as_table(html, largest)
                 logger.info("Injected %d records from API interception into HTML.", len(largest))
             else:
-                # Fallback 1: try calling known API patterns from browser context
-                try:
-                    from urllib.parse import urlsplit
-                    parts = urlsplit(url)
-                    base = f"{parts.scheme}://{parts.netloc}"
-                    for api_path in ["/data/corporateaz", "/api/data", "/data/list"]:
-                        api_url = base + api_path
-                        for method in ["POST", "GET"]:
-                            result = page.evaluate(
-                                """async ({url, method}) => {
-                                    try {
-                                        const opts = {method: method, credentials: 'include'};
-                                        if (method === 'POST') {
-                                            opts.headers = {
-                                                'Content-Type': 'application/json',
-                                                'X-Requested-With': 'XMLHttpRequest'
-                                            };
-                                        }
-                                        const resp = await fetch(url, opts);
-                                        if (!resp.ok) return null;
-                                        const text = await resp.text();
-                                        return text;
-                                    } catch(e) { return null; }
-                                }""",
-                                {"url": api_url, "method": method},
-                            )
-                            if result and result.strip().startswith("["):
-                                import json as _json
-                                parsed = _json.loads(result)
-                                if isinstance(parsed, list) and len(parsed) > 2:
-                                    html = _inject_api_data_as_table(html, parsed)
-                                    logger.info("page.evaluate %s %s → %d records", method, api_url, len(parsed))
-                                    break
-                except Exception:
-                    pass
-
-                # Fallback 2: read rendered DOM tables directly (AJAX already loaded data)
+                # Fallback: read rendered DOM tables directly (AJAX already loaded data)
                 if not api_json_data:
                     try:
                         table_html = page.evaluate(
@@ -248,11 +224,12 @@ def _inject_api_data_as_table(html: str, records: list) -> str:
     """Convert API JSON array records into HTML table and inject before </body>."""
     if not records or not isinstance(records[0], dict):
         return html
+    from html import escape
     keys = list(records[0].keys())
     rows_html = []
-    rows_html.append("<tr>" + "".join(f"<th>{k}</th>" for k in keys) + "</tr>")
+    rows_html.append("<tr>" + "".join(f"<th>{escape(str(k))}</th>" for k in keys) + "</tr>")
     for r in records:
-        cells = "".join(f"<td>{r.get(k, '')}</td>" for k in keys)
+        cells = "".join(f"<td>{escape(str(r.get(k, '')))}</td>" for k in keys)
         rows_html.append(f"<tr>{cells}</tr>")
     table_html = f'<table id="api-data"><tbody>{"".join(rows_html)}</tbody></table>'
     if "</body>" in html:

@@ -27,6 +27,15 @@ class _FakePage:
             raise self._raise_on_goto
         return self._response
 
+    def on(self, event: str, handler) -> None:
+        pass
+
+    def wait_for_load_state(self, state: str, timeout: float = 0) -> None:
+        pass
+
+    def evaluate(self, script: str, arg=None):
+        return ""
+
     def content(self) -> str:
         return self._html
 

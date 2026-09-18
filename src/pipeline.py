@@ -132,10 +132,27 @@ def ai_extract(
             )
             continue
 
-        # Selector cache bị tạm thời skip — cache chỉ trả 1 value cho 1 field,
-        # nhưng trang có thể có nhiều records. Luôn gửi field còn lại cho AI
-        # để AI trả đủ số lượng records thực tế (xem docs/kien_audit/03 mục 6.1).
         remaining_descriptions[name] = description
+
+    # Cache chiến lược theo domain (CLAUDE.md mục 5). Selector là đường dẫn tuyệt
+    # đối => chỉ ra ĐÚNG 1 giá trị, nên chỉ hợp lệ với trang 1-record. Để không
+    # "khoá" trang nhiều record về 1 giá trị: (1) chỉ GHI cache khi AI trả đúng 1
+    # bản ghi; (2) chỉ ÁP cache khi TẤT CẢ field còn lại đều có selector khớp
+    # (all-or-nothing) — nếu thiếu 1 field thì cả nhóm đi qua AI.
+    if remaining_descriptions:
+        cached: dict[str, FieldExtraction] = {}
+        for name in remaining_descriptions:
+            strategy = storage.get_extraction_strategy(domain, name)
+            value = apply_selector(html, strategy.selector) if strategy is not None else None
+            if value is None:
+                break
+            cached[name] = FieldExtraction(
+                value=value, confidence=0.9, evidence=f"cached_selector:{strategy.selector}={value!r}"
+            )
+        else:
+            logger.info("[%s] Toàn bộ field còn lại lấy từ cache selector theo domain %s, KHÔNG gọi AI.", url, domain)
+            resolved_fields.update(cached)
+            remaining_descriptions = {}
 
     if remaining_descriptions:
         logger.info(
@@ -157,6 +174,12 @@ def ai_extract(
             url, len(all_records),
             {name: fe.confidence for name, fe in all_records[0].items()} if all_records else {},
         )
+        if len(extraction.records) == 1:
+            for name, fe in extraction.records[0].items():
+                if name in remaining_descriptions and fe.value not in (None, ""):
+                    selector = find_selector(html, fe.value)
+                    if selector is not None:
+                        storage.save_extraction_strategy(domain, name, selector, sample_value=str(fe.value))
     else:
         logger.info(
             "Toàn bộ field của %s lấy được từ structured data/cache — bỏ qua AI.",

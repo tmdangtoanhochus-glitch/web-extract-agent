@@ -212,7 +212,13 @@ def run_bulk(*, url, field_descriptions, options, fetcher, ai_client, storage,
     sources = {source.source_url for source in storage.list_sources(dataset_id, active_only=True)} if dataset else set()
     for index, (target, first, last) in indexed_plans:
         if checkpoint:
-            proceed = checkpoint()
+            # Nhả khóa tuần tự hóa khi người dùng tạm dừng để user khác và lịch tự động
+            # vẫn chạy được; lấy lại khóa rồi làm mới dedup bên dưới.
+            _bulk_lock.release()
+            try:
+                proceed = checkpoint()
+            finally:
+                _bulk_lock.acquire()
             if not proceed:
                 cancelled = True
                 break

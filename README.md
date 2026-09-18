@@ -187,7 +187,9 @@ Thứ tự bắt buộc: **phải deploy xong Runtime API và có URL trước, 
 ## Compliance
 
 Mặc định luôn kiểm tra `robots.txt` và có delay giữa các request theo domain
-(`FETCH_DEFAULT_DELAY_SECONDS` trong `.env`). Không tắt kiểm tra robots.txt trừ khi có
+(`FETCH_DEFAULT_DELAY_SECONDS` trong `.env`). Bỏ qua robots.txt chỉ làm được theo từng lượt kéo (checkbox + lý do bắt buộc ở màn "Chạy crawl", chỉ áp dụng cho domain đó, có log).
+`FETCH_ENGINE` = `playwright` (mặc định) | `hybrid` | `httpx`. Người dùng gửi phản hồi ở mọi màn hình; AI_DEBUG phân loại và
+trả lời hoặc chuyển admin (trang Admin Debug). Không tắt kiểm tra robots.txt trừ khi có
 lý do rõ ràng và được ghi log lại tường minh.
 
 ## Cấu trúc project

@@ -1,5 +1,26 @@
 # Changelog
 
+## Tuân thủ skill GreenNode AgentBase + phản hồi người dùng — 2026-09-19
+
+- **robots.txt luôn được kiểm tra** với mọi engine: `PlaywrightFetcher` mặc định `HttpRobotsChecker`
+  (trước đây `AllowAllRobotsChecker` nên `FETCH_RESPECT_ROBOTS_TXT=true` vô tác dụng); bản sao theo
+  cookie giữ nguyên checker + rate limit.
+- **Bật/tắt bỏ qua robots.txt theo từng lượt kéo**: checkbox + lý do bắt buộc ở màn Chạy crawl
+  (`ignore_robots`, `ignore_robots_reason` trong `POST /crawl`); chỉ áp dụng cho đúng domain của URL,
+  ghi log WARNING mỗi lần (`OverrideRobotsChecker`). `FETCH_RESPECT_ROBOTS_TXT=false` toàn cục vẫn còn, kèm cảnh báo khi khởi động.
+- **Phản hồi/báo lỗi tự do ở mọi màn hình** (crawl, Runner, admin): `POST /feedback` -> AI_DEBUG phân loại
+  (`src/ai/feedback_triage.py`). AI kết luận *không phải lỗi* với confidence >= 0.75 thì trả lời thẳng người dùng;
+  là lỗi / confidence thấp / AI hỏng thì chuyển admin kèm trace (audit theo `request_id`, các lần crawl lỗi gần nhất,
+  chẩn đoán AI) — xem tab "Phản hồi AI đã chuyển admin" ở trang Admin. Cookie/token bị che trước khi gửi AI/lưu.
+- Fetcher: bỏ dò API đoán mò (`/data/corporateaz`...) và `sleep(8)` cố định (đổi sang chờ `networkidle`), escape HTML khi
+  chèn bảng API; `FETCH_ENGINE=playwright|hybrid|httpx` (mặc định playwright).
+- AI extract: trang dài chia đoạn ≤ 8000 ký tự thay vì cắt bỏ phần đuôi.
+- Bật lại cache selector cho trang 1-record (chỉ ghi khi AI trả đúng 1 bản ghi, chỉ áp khi mọi field còn lại đều khớp).
+- Bulk: nhả khóa tuần tự khi tạm dừng (sửa test treo). UI: bỏ ghi file lên đĩa server theo đường dẫn người dùng nhập (chỉ tải về).
+- Skill AgentBase: `Dockerfile` gốc dùng cổng 8080; CI chạy test trước khi build/push image; xóa `scripts/create_admin_direct.py`
+  (hardcode mật khẩu); chuẩn hóa LF + `.gitattributes`; gộp reset/quên mật khẩu Runner.
+- Test: 588 pass (sửa fake Playwright page, timeout/mocks UI, test nhiều bảng).
+
 ## Runner integration — cập nhật 2026-09-17
 
 ### Bổ sung kiểm chứng phase 26–27: giữ thao tác nhập xen giữa các frame

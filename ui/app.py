@@ -23,6 +23,12 @@ except ModuleNotFoundError as exc:
     from crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls
     from crawl_jobs import submit_background, render_background
     from schedule_controls import schedule_controls
+try:
+    from ui.feedback import feedback_panel
+except ModuleNotFoundError as exc:
+    if exc.name != "ui":
+        raise
+    from feedback import feedback_panel
 from typing import Any, Optional
 
 import httpx
@@ -398,17 +404,9 @@ def _render_step2() -> None:
         fmt_ext = _FILE_FORMATS[st.session_state.file_format]
         st.session_state.file_path = f"{st.session_state.file_name.strip()}.{fmt_ext}"
 
-        _default_download = os.path.join(os.path.expanduser("~"), "Downloads")
-        st.session_state.custom_save_path = st.text_input(
-            "Đường dẫn lưu file",
-            value=st.session_state.get("custom_save_path", ""),
-            key="custom_save_path_input",
-            placeholder=f"Để trống → lưu tại: {_default_download}",
-        )
-        _save_dir = st.session_state.custom_save_path.strip() or _default_download
         if st.session_state.file_name.strip():
             st.markdown(
-                f'<div class="mp-hint">📂 File sẽ lưu tại: <code>{_save_dir}\\{st.session_state.file_path}</code></div>',
+                f'<div class="mp-hint">📂 Kết quả sẽ có nút tải về trình duyệt: <code>{st.session_state.file_path}</code></div>',
                 unsafe_allow_html=True,
             )
         st.session_state.write_mode_label = st.selectbox(
@@ -517,6 +515,9 @@ def _render_step3() -> None:
                 body["dataset_name"] = st.session_state.dataset_name
             if crawl_options:
                 body["crawl_options"] = crawl_options
+            if st.session_state.get("ignore_robots"):
+                body["ignore_robots"] = True
+                body["ignore_robots_reason"] = st.session_state.get("ignore_robots_reason", "")
             parts = urlsplit(url)
             attempt = {"url": urlunsplit((parts.scheme, parts.hostname or "", parts.path, "", "")),
                        "fields": list(field_descriptions), "storage_mode": "file" if is_file_mode else "db"}
@@ -656,8 +657,6 @@ def _render_step3() -> None:
 
     if st.session_state.run_file_paths:
         st.markdown("**File kết quả**")
-        _default_download = os.path.join(os.path.expanduser("~"), "Downloads")
-        _save_dir = st.session_state.get("custom_save_path", "").strip() or _default_download
         for file_path in st.session_state.run_file_paths:
             ext = file_path.lower().rsplit(".", 1)[-1] if "." in file_path else "json"
             mime_map = {"json": "application/json", "csv": "text/csv",
@@ -668,14 +667,6 @@ def _render_step3() -> None:
             content = _api_download(f"/exports/{file_path}")
             if content is not None:
                 _file_name = file_path.split("/")[-1]
-                _dest = os.path.join(_save_dir, _file_name)
-                try:
-                    os.makedirs(_save_dir, exist_ok=True)
-                    with open(_dest, "wb") as f:
-                        f.write(content)
-                    st.success(f"Đã lưu: {_dest}")
-                except Exception as e:
-                    st.warning(f"Không lưu được vào {_dest}: {e}")
                 st.download_button(
                     f"⬇ Tải {_file_name}", data=content, file_name=_file_name,
                     mime=mime, key=f"dl_{file_path}",
@@ -1085,3 +1076,5 @@ except Exception as exc:
     st.error("Không hiển thị được bước này. Bạn vẫn có thể báo lỗi cho admin bên dưới.")
 render_background(_client)
 report_panel(_api_post)
+_last_attempt = (st.session_state.get("crawl_attempts") or [{}])[-1]
+feedback_panel(_api_post, f"crawl-buoc-{st.session_state.get('step', 1)}", _last_attempt.get("request_id"))

@@ -107,6 +107,22 @@ def _api_delete(path: str) -> Optional[dict]:
 
 tab_errors, tab_credentials, tab_reports = st.tabs(["❌ Job lỗi & gợi ý sửa", "🔑 Cookie cũ", "Báo lỗi từ người dùng"])
 
+# Đặt trước tab_errors vì tab đó có thể st.stop() khi API lỗi.
+with st.sidebar.expander("💬 Phản hồi AI đã chuyển admin", expanded=False):
+    _fb = _api_get("/admin/feedback") or []
+    st.caption(f"{len(_fb)} phản hồi đang chờ xử lý (AI kết luận là lỗi hoặc không đủ chắc chắn).")
+    for _item in _fb:
+        st.markdown(f"**{_item.get('screen')}** · {_item.get('occurred_at', '')[:19]}\n\n{_item.get('message')}")
+        st.caption(f"AI: is_bug={_item.get('ai_is_bug')} · confidence={_item.get('ai_confidence')}")
+        if _item.get("ai_diagnosis"):
+            st.write(_item["ai_diagnosis"])
+        with st.popover("Trace"):
+            st.json(_item.get("trace", {}))
+        if st.button("Đã xử lý", key=f"fb_resolve_{_item['feedback_id']}"):
+            _api_post(f"/admin/feedback/{_item['feedback_id']}/resolve")
+            st.rerun()
+        st.divider()
+
 with tab_errors:
     if st.button("🔄 Tải lại danh sách lỗi"):
         st.rerun()
@@ -198,3 +214,14 @@ with tab_reports:
                     st.code(result["content"], language="text")
                 else:
                     st.error("Chưa chẩn đoán được; báo lỗi vẫn được lưu.")
+
+
+try:
+    from ui.feedback import feedback_panel
+except ModuleNotFoundError as exc:
+    if exc.name != "ui":
+        raise
+    from feedback import feedback_panel
+
+_admin_fb_post = lambda path, body: _api_post(path, body)
+feedback_panel(_admin_fb_post, "admin")

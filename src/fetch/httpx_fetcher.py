@@ -11,7 +11,7 @@ from typing import Callable, Optional
 
 import httpx
 
-from .base import FetchEngine, FetchResult, RobotsChecker, domain_of, utcnow
+from .base import FetchEngine, FetchResult, OverrideRobotsChecker, RobotsChecker, domain_of, utcnow
 from .rate_limiter import DomainRateLimiter
 from .robots import HttpRobotsChecker
 
@@ -69,6 +69,13 @@ class HttpxFetcher(FetchEngine):
         clone._rate_limiter = self._rate_limiter
         clone._request_cookie = cookie
         clone._cookie_origin = urlsplit(url)[:2]
+        return clone
+
+    def with_robots_ignored(self, domain: str, reason: str):
+        """Bản sao dùng riêng cho 1 request: bỏ qua robots.txt của đúng `domain`."""
+        import copy
+        clone = copy.copy(self)
+        clone._robots_checker = OverrideRobotsChecker(self._robots_checker, domain, reason)
         return clone
 
     def _wait_for_domain(self, url: str) -> None:

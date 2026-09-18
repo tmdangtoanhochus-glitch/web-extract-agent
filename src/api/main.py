@@ -35,7 +35,7 @@ from .crawl_reports import create_report_router, context, exception_frames
 from ..ai.base import AIClient
 from ..ai.greennode_client import GreenNodeChatClient
 from ..config import load_settings
-from ..fetch.base import FetchEngine, HybridFetcher
+from ..fetch.base import FetchEngine, HybridFetcher, domain_of
 from ..fetch.httpx_fetcher import HttpxFetcher
 from ..pipeline import run_crawl_job, run_file_crawl_job
 from ..scheduler import CrawlScheduler, validate_trigger
@@ -47,6 +47,8 @@ from ..storage.sqlite_storage import SQLiteStorage
 from .admin import create_admin_router
 
 _VALID_WRITE_MODES = ("append", "new_file", "overwrite_row")
+
+logger = logging.getLogger(__name__)
 
 
 class CrawlRequest(BaseModel):
@@ -63,6 +65,10 @@ class CrawlRequest(BaseModel):
     write_mode: Optional[str] = None  # "append" | "new_file" | "overwrite_row"
     key_field: Optional[str] = None
     image_fields: list[str] = []  # field nào là ảnh cần tải về, xem image_downloader.py
+    # Bỏ qua robots.txt cho đúng domain của url — hành động tường minh (CLAUDE.md
+    # mục 3): bắt buộc kèm lý do, mỗi lần áp dụng đều log WARNING.
+    ignore_robots: bool = False
+    ignore_robots_reason: Optional[str] = None
 
 
 class CrawlResponse(BaseModel):
@@ -290,6 +296,11 @@ def create_app(
             {"loc": list(error["loc"]), "type": error["type"]} for error in exc.errors()]})
 
     app.include_router(create_report_router(storage))
+    from .feedback import create_feedback_router
+    app.include_router(create_feedback_router(
+        storage, ai_debug_base_url=ai_debug_base_url, ai_debug_api_key=ai_debug_api_key,
+        ai_debug_model=ai_debug_model, ai_debug_timeout_seconds=ai_debug_timeout_seconds,
+    ))
     from .dataset_export import create_export_router
     app.include_router(create_export_router(storage))
 
@@ -395,6 +406,14 @@ def create_app(
                 if not hasattr(fetcher, "with_request_cookie"):
                     raise HTTPException(400, "Fetcher does not support per-request cookies")
                 request_fetcher = fetcher.with_request_cookie(req.url, cookie)
+            if req.ignore_robots:
+                reason = (req.ignore_robots_reason or "").strip()
+                if len(reason) < 5:
+                    raise HTTPException(400, "Bỏ qua robots.txt phải kèm lý do (tối thiểu 5 ký tự)")
+                if not hasattr(request_fetcher, "with_robots_ignored"):
+                    raise HTTPException(400, "Fetcher không hỗ trợ bỏ qua robots.txt theo request")
+                logger.warning("Người dùng yêu cầu BỎ QUA robots.txt cho %s. Lý do: %s", req.url, reason)
+                request_fetcher = request_fetcher.with_robots_ignored(domain_of(req.url), reason)
             if req.crawl_options:
                 if not req.field_descriptions or req.storage_mode not in {"db", "file"}:
                     raise HTTPException(400, "Fields and valid storage mode required")
@@ -576,30 +595,40 @@ def _build_default_app() -> FastAPI:
     # Trước đây biến này được đọc vào Settings nhưng KHÔNG BAO GIỜ dùng tới —
     # fetcher luôn fail-closed theo HttpRobotsChecker() mặc định dù người
     # dùng đã set false trong .env (xem docs/kien_audit/03 mục 2.6).
-    robots_checker = None
+    robots_checker = None  # None = HttpRobotsChecker() mặc định (luôn kiểm tra)
     if not settings.fetch_respect_robots_txt:
         from ..fetch.base import AllowAllRobotsChecker
+        logging.getLogger(__name__).warning(
+            "FETCH_RESPECT_ROBOTS_TXT=false: TOÀN BỘ crawl sẽ BỎ QUA robots.txt. "
+            "Chỉ dùng cho dev/test; production nên để true và bật bỏ qua theo từng "
+            "request (có lý do, có log) qua ignore_robots."
+        )
         robots_checker = AllowAllRobotsChecker()
     chrome_path = os.environ.get("CHROME_EXECUTABLE_PATH", "") or None
-    robots_checker = None
-    if not settings.fetch_respect_robots_txt:
-        from ..fetch.base import AllowAllRobotsChecker
-        robots_checker = AllowAllRobotsChecker()
-    try:
-        from ..fetch.playwright_fetcher import PlaywrightFetcher
-        fetcher = PlaywrightFetcher(
-            user_agent=settings.fetch_user_agent,
-            delay_seconds=settings.fetch_default_delay_seconds,
-            robots_checker=robots_checker,
-            timeout_seconds=60.0,
-            chrome_executable_path=chrome_path,
-        )
-    except Exception:
-        fetcher = HttpxFetcher(
-            user_agent=settings.fetch_user_agent,
-            delay_seconds=settings.fetch_default_delay_seconds,
-            robots_checker=robots_checker,
-        )
+    # FETCH_ENGINE: playwright (mặc định — render JS, đúng cho site như vietstock),
+    # hybrid (httpx trước, fallback Playwright khi 403/HTML rỗng) hoặc httpx.
+    # Mọi engine dùng chung robots checker + rate limit theo domain.
+    engine = os.environ.get("FETCH_ENGINE", "playwright").strip().lower()
+    httpx_fetcher = HttpxFetcher(
+        user_agent=settings.fetch_user_agent,
+        delay_seconds=settings.fetch_default_delay_seconds,
+        robots_checker=robots_checker,
+    )
+    fetcher = httpx_fetcher
+    if engine in {"playwright", "hybrid"}:
+        try:
+            from ..fetch.playwright_fetcher import PlaywrightFetcher
+            playwright_fetcher = PlaywrightFetcher(
+                user_agent=settings.fetch_user_agent,
+                delay_seconds=settings.fetch_default_delay_seconds,
+                robots_checker=robots_checker,
+                timeout_seconds=60.0,
+                chrome_executable_path=chrome_path,
+            )
+            fetcher = (HybridFetcher(httpx_fetcher, playwright_fetcher)
+                       if engine == "hybrid" else playwright_fetcher)
+        except Exception:
+            logging.getLogger(__name__).exception("Không khởi tạo được Playwright — dùng httpx")
     ai_client = GreenNodeChatClient(
         base_url=settings.ai_base_url,
         api_key=settings.ai_api_key,

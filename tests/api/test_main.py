@@ -612,3 +612,29 @@ def test_manual_crawl_failure_is_logged_to_audit_log_for_admin_panel():
     assert len(errors["manual_crawl_errors"]) == 1
     assert errors["manual_crawl_errors"][0]["detail"]["url"] == "https://batdongsan.com.vn/x"
     assert errors["manual_crawl_errors"][0]["detail"]["error"] == "not_found"
+
+
+def test_ignore_robots_requires_reason_and_uses_overridden_fetcher(caplog):
+    class _Fetcher(_FakeFetcher):
+        def __init__(self):
+            super().__init__()
+            self.ignored = None
+
+        def with_robots_ignored(self, domain, reason):
+            clone = _Fetcher()
+            clone.ignored = (domain, reason)
+            _Fetcher.last = clone
+            return clone
+
+    app = create_app(fetcher=_Fetcher(), ai_client=_FakeAIClient(), storage=SQLiteStorage(":memory:"))
+    client = TestClient(app)
+    body = {"url": "https://example.com/p", "field_descriptions": {"a": "b"}, "dataset_name": "D",
+            "ignore_robots": True}
+
+    assert client.post("/crawl", json=body).status_code == 400
+
+    with caplog.at_level("WARNING"):
+        resp = client.post("/crawl", json={**body, "ignore_robots_reason": "Tôi là chủ website"})
+    assert resp.status_code == 200
+    assert _Fetcher.last.ignored == ("example.com", "Tôi là chủ website")
+    assert "BỎ QUA robots.txt" in caplog.text

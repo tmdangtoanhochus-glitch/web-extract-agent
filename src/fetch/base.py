@@ -60,6 +60,26 @@ class AllowAllRobotsChecker(RobotsChecker):
         return True
 
 
+class OverrideRobotsChecker(RobotsChecker):
+    """Bỏ qua robots.txt CHỈ cho đúng 1 domain, có lý do bắt buộc (CLAUDE.md mục
+    3: hành động tường minh + cảnh báo + ghi log, không phải toggle im lặng).
+    Domain khác vẫn đi qua checker gốc. Mỗi lần áp dụng đều log WARNING."""
+
+    def __init__(self, inner: RobotsChecker, domain: str, reason: str) -> None:
+        self._inner = inner
+        self._domain = domain
+        self._reason = reason
+
+    def can_fetch(self, url: str, user_agent: str) -> bool:
+        if domain_of(url) == self._domain:
+            logger.warning(
+                "BỎ QUA robots.txt cho %s theo yêu cầu tường minh của người dùng. Lý do: %s",
+                url, self._reason,
+            )
+            return True
+        return self._inner.can_fetch(url, user_agent)
+
+
 class FetchEngine(ABC):
     """Interface chung cho mọi engine fetch (httpx, Playwright, ...)."""
 
@@ -101,12 +121,24 @@ class HybridFetcher(FetchEngine):
         return result
 
     def with_request_cookie(self, url: str, cookie: str) -> "HybridFetcher":
-        clone = HybridFetcher(self._primary, self._fallback, self._min_html)
+        clone = HybridFetcher(self._primary, self._fallback, self._min_html, self._min_markdown_ratio)
         if hasattr(self._primary, "with_request_cookie"):
             clone._primary = self._primary.with_request_cookie(url, cookie)
         if hasattr(self._fallback, "with_request_cookie"):
             clone._fallback = self._fallback.with_request_cookie(url, cookie)
         return clone
+
+
+def _hybrid_with_robots_ignored(self, domain: str, reason: str) -> "HybridFetcher":
+    clone = HybridFetcher(self._primary, self._fallback, self._min_html, self._min_markdown_ratio)
+    for attr in ("_primary", "_fallback"):
+        engine = getattr(self, attr)
+        if hasattr(engine, "with_robots_ignored"):
+            setattr(clone, attr, engine.with_robots_ignored(domain, reason))
+    return clone
+
+
+HybridFetcher.with_robots_ignored = _hybrid_with_robots_ignored
 
 
 def utcnow() -> datetime:

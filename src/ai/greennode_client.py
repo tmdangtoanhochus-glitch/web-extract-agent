@@ -79,9 +79,29 @@ class GreenNodeChatClient(AIClient):
         self._injected_client = client
 
     def extract(self, markdown: str, field_descriptions: dict[str, str]) -> ExtractionResult:
+        """Trang dài được chia thành nhiều đoạn (theo ranh giới dòng) và gọi AI từng
+        đoạn rồi gộp bản ghi — không cắt bỏ phần đuôi trang nữa (trước đây bản ghi
+        ở phần sau bị mất im lặng)."""
         if not field_descriptions:
             raise ValueError("field_descriptions không được rỗng")
+        chunks = _split_markdown(markdown)
+        if len(chunks) == 1:
+            return self._extract_chunk(chunks[0], field_descriptions)
+        logger.info("Trang dài %d ký tự — chia %d đoạn để gọi AI.", len(markdown), len(chunks))
+        records: list = []
+        raw_parts: list[str] = []
+        for index, chunk in enumerate(chunks, 1):
+            result = self._extract_chunk(chunk, field_descriptions)
+            if not result.success:
+                if not records:
+                    return result
+                logger.warning("Đoạn %d/%d lỗi (%s) — giữ %d bản ghi đã có.", index, len(chunks), result.error, len(records))
+                break
+            records.extend(result.records)
+            raw_parts.append(result.raw_response or "")
+        return ExtractionResult(records=records, raw_response="\n".join(raw_parts), success=True)
 
+    def _extract_chunk(self, markdown: str, field_descriptions: dict[str, str]) -> ExtractionResult:
         payload = {
             "model": self._model,
             "messages": [
@@ -130,6 +150,32 @@ def _warn_if_base_url_missing_v1_suffix(base_url: str) -> None:
             "thật yêu cầu dạng 'https://<host>/v1'. Kiểm tra lại nếu request bị 404.",
             base_url,
         )
+
+
+_MAX_CHUNK_CHARS = 8000
+_MAX_CHUNKS = 6
+
+
+def _split_markdown(markdown: str) -> list[str]:
+    """Chia markdown thành các đoạn <= _MAX_CHUNK_CHARS theo ranh giới dòng (dòng
+    quá dài tự cắt cứng). Tối đa _MAX_CHUNKS đoạn — vượt quá thì log cảnh báo."""
+    chunks: list[str] = []
+    current: list[str] = []
+    size = 0
+    for line in markdown.split("\n"):
+        pieces = [line[i:i + _MAX_CHUNK_CHARS] for i in range(0, len(line), _MAX_CHUNK_CHARS)] or [""]
+        for piece in pieces:
+            if current and size + len(piece) + 1 > _MAX_CHUNK_CHARS:
+                chunks.append("\n".join(current))
+                current, size = [], 0
+            current.append(piece)
+            size += len(piece) + 1
+    if current:
+        chunks.append("\n".join(current))
+    if len(chunks) > _MAX_CHUNKS:
+        logger.warning("Trang quá dài (%d đoạn) — chỉ xử lý %d đoạn đầu.", len(chunks), _MAX_CHUNKS)
+        chunks = chunks[:_MAX_CHUNKS]
+    return chunks or [""]
 
 
 def _build_user_prompt(markdown: str, field_descriptions: dict[str, str]) -> str:

@@ -153,6 +153,25 @@ def create_admin_router(
             raise HTTPException(502, "AI diagnosis failed")
         return {"content": suggestion.content}
 
+    @router.get("/feedback")
+    def list_feedback(include_resolved: bool = False):
+        """Phản hồi người dùng đã được AI_DEBUG chuyển lên admin (kèm trace)."""
+        entries = storage.list_audit_log(limit=1000)
+        resolved = {e.job_id for e in entries if e.event_type == "user_feedback_resolved"}
+        return [
+            {"feedback_id": e.job_id, "occurred_at": e.occurred_at.isoformat(), "resolved": e.job_id in resolved, **e.detail}
+            for e in entries
+            if e.event_type == "user_feedback_escalated" and (include_resolved or e.job_id not in resolved)
+        ]
+
+    @router.post("/feedback/{feedback_id}/resolve")
+    def resolve_feedback(feedback_id: str):
+        entries = storage.list_audit_log(job_id=feedback_id, limit=50)
+        if not any(e.event_type == "user_feedback_escalated" for e in entries):
+            raise HTTPException(404, "Không tìm thấy phản hồi đã chuyển admin")
+        storage.add_audit_log("user_feedback_resolved", job_id=feedback_id, detail={})
+        return {"status": "resolved"}
+
     @router.get("/errors")
     def list_errors() -> dict:
         """Gộp 2 nguồn lỗi: job lịch chạy tự động bị lỗi (`scheduled_jobs`) VÀ

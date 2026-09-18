@@ -47,8 +47,8 @@ def test_date_filter_uses_record_date_and_rejects_ambiguous_table():
     rows = table_rows(HTML, options(), date(2026, 9, 16), date(2026, 9, 16))
     assert len(rows) == 1 and rows[0][0]["price"] == "20"
     assert rows[0][1].date() == date(2026, 9, 16)
-    with pytest.raises(ValueError):
-        table_rows(HTML + HTML, options(), None, None)
+    # Nhiều bảng khớp selector được gộp (tính năng v2), không còn báo mơ hồ.
+    assert len(table_rows(HTML + HTML, options(), None, None)) == 2 * len(table_rows(HTML, options(), None, None))
     with pytest.raises(ValueError):
         table_rows(HTML.replace('<td>10</td>', '<td colspan="2">10</td>'), options(), None, None)
 

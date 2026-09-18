@@ -246,3 +246,23 @@ def test_extract_raises_value_error_for_empty_field_descriptions():
 
     with pytest.raises(ValueError):
         client.extract("nội dung", {})
+
+
+def test_long_markdown_is_chunked_not_truncated():
+    """Trang dài được chia đoạn, bản ghi ở phần đuôi không bị mất."""
+    seen_prompts = []
+
+    def handler(request):
+        seen_prompts.append(json.loads(request.content)["messages"][1]["content"])
+        n = len(seen_prompts)
+        return httpx.Response(200, json=_openai_response(
+            json.dumps([{"a": {"value": f"r{n}", "confidence": 0.9, "evidence": "e"}}])))
+
+    client = _make_client(handler)
+    markdown = "\n".join(f"dòng {i} " + "x" * 90 for i in range(200))  # ~20k ký tự
+    result = client.extract(markdown, {"a": "mô tả"})
+
+    assert result.success is True
+    assert len(seen_prompts) >= 3
+    assert "dòng 199" in seen_prompts[-1]
+    assert [r["a"].value for r in result.records] == [f"r{i}" for i in range(1, len(seen_prompts) + 1)]
