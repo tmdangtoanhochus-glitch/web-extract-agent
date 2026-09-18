@@ -1,6 +1,6 @@
 #!/bin/sh
-# Chạy Streamlit (nội bộ, không expose) + nginx (foreground, expose 8080) —
-# nginx phía trước lo route /health + reverse proxy, xem deploy/nginx-ui.conf.
+# Cháº¡y Streamlit (ná»™i bá»™, khÃ´ng expose) + nginx (foreground, expose 8080) â€”
+# nginx phÃ­a trÆ°á»›c lo route /health + reverse proxy, xem deploy/nginx-ui.conf.
 set -e
 
 streamlit run ui/app.py \
