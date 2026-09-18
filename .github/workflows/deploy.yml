@@ -1,18 +1,6 @@
-name: Build and Push to GreenNode
+name: Build and Push to GreenNode (chạy tay)
 
 on:
-  push:
-    branches: [kien-v2]
-    paths:
-      - 'Dockerfile.api'
-      - 'Dockerfile.ui'
-      - 'requirements.txt'
-      - 'requirements-auth.txt'
-      - 'requirements-runner.txt'
-      - 'src/**'
-      - 'ui/**'
-      - 'deploy/**'
-      - '.github/workflows/deploy.yml'
   workflow_dispatch:
     inputs:
       tag:
