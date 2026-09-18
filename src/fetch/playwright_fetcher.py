@@ -158,7 +158,7 @@ class PlaywrightFetcher(FetchEngine):
                                 api_json_data.append(parsed)
                                 logger.info("API interception captured %d records from %s", len(parsed), response.url[:80])
                 except Exception as exc:
-                    logger.warning("API interception error for %s: %s", response.url[:80], exc)
+                    logger.debug("API interception bỏ qua %s: %s", response.url[:80], exc)  # thường là request quảng cáo/đã điều hướng
             page.on("response", _capture_api)
             response = page.goto(
                 url, timeout=self._timeout_seconds * 1000, wait_until=self._wait_until
