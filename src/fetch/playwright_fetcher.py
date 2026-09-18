@@ -220,6 +220,17 @@ class PlaywrightFetcher(FetchEngine):
                             logger.info("Injected rendered DOM tables: %d chars", len(table_html))
                     except Exception:
                         pass
+
+                # Fallback 3: get rendered text content directly (bypasses HTML structure issues)
+                try:
+                    body_text = page.evaluate("document.body.innerText")
+                    if body_text and len(body_text) > 500:
+                        import html as _html_module
+                        escaped = _html_module.escape(body_text)
+                        html = html + f"<div id='rendered-text'><pre>{escaped}</pre></div>"
+                        logger.info("Injected rendered body text: %d chars", len(body_text))
+                except Exception:
+                    pass
             status_code = response.status if response is not None else None
             success = response is not None and response.ok
             error = None
