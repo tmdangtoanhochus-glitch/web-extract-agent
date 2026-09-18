@@ -155,7 +155,7 @@ class PlaywrightFetcher(FetchEngine):
                 url, timeout=self._timeout_seconds * 1000, wait_until=self._wait_until
             )
             import time as _time
-            _time.sleep(3)
+            _time.sleep(8)
             html = page.content()
             if api_json_data:
                 largest = max(api_json_data, key=len)
