@@ -655,6 +655,9 @@ def _build_storage(settings) -> StorageEngine:
     return SQLiteStorage(settings.db_path)
 
 
+app = _build_default_app()
+
+
 @app.get("/debug/fetch")
 def debug_fetch(url: str):
     """Diagnostic endpoint: trace Playwright fetch step by step."""
@@ -783,6 +786,3 @@ def debug_fetch(url: str):
         log(f"EXCEPTION: {type(e).__name__}: {e}")
 
     return {"logs": logs}
-
-
-app = _build_default_app()
