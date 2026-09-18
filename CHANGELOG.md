@@ -258,6 +258,25 @@
   tình huống gửi lại kết quả: 12 pass. Có 1 cảnh báo deprecation Starlette/AnyIO
   đã tồn tại; chưa chạy browser/UAT, AI hoặc PostgreSQL thật.
 
+## Runner — thêm reset mật khẩu + hướng dẫn tạo admin qua Postgres — 2026-09-18
+
+### Đã thêm
+- Admin Runner đặt lại mật khẩu cho user quên mật khẩu (`POST
+  /runner/users/{id}/reset-password`, nút trong tab "Quản trị" của UI Runner)
+  — không có luồng tự phục vụ qua email (chưa có hệ thống mail), admin đặt
+  trực tiếp rồi tự báo lại cho user qua kênh khác.
+- `scripts/create_runner_admin.py` nhận thêm `--postgres-dsn` — chạy được từ
+  xa để bootstrap admin khi deploy Runner với `RUNNER_DATABASE_URL` trỏ
+  Postgres, không cần shell vào container đang chạy trên GreenNode.
+- Hướng dẫn cụ thể trong `docs/RUNNER_SETUP.md` mục "Tạo admin khi deploy
+  (Postgres)".
+
+### Đã sửa
+- Sửa lỗi Docker `deploy/start-ui.sh: 4: set: Illegal option -` — file bị
+  Windows git tự đổi LF thành CRLF lúc checkout do chưa có `.gitattributes`,
+  khiến container UI crash loop ngay lúc start. Thêm `.gitattributes` ép LF
+  cho `*.sh`/`Dockerfile*`/`*.conf`.
+
 ## Crawler — merge origin/main (audit Kiên) vào develop — 2026-09-17
 
 ### Hợp nhất 2 nhánh làm việc song song

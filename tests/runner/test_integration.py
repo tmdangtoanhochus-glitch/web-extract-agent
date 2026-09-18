@@ -176,6 +176,46 @@ def test_disabled_user_invalidates_existing_session_and_agent(system):
     assert client.post("/runner/agent/claim", headers={"Authorization": "Bearer " + pair["agent_token"]}).status_code == 401
 
 
+def test_admin_can_reset_other_user_password(system):
+    s, _, _, owner, other, _, client = system
+    admin_auth = login(client)
+
+    resp = client.post(
+        "/runner/users/" + other["id"] + "/reset-password",
+        json={"new_password": "brand-new-password-1"},
+        headers=admin_auth,
+    )
+    assert resp.status_code == 200
+
+    # Mật khẩu cũ không còn đăng nhập được, mật khẩu mới đăng nhập được.
+    assert client.post("/runner/login", json={"username": "other", "password": "synthetic-password-2"}).status_code == 401
+    assert client.post("/runner/login", json={"username": "other", "password": "brand-new-password-1"}).status_code == 200
+
+
+def test_non_admin_cannot_reset_password(system):
+    _, _, _, _, other, _, client = system
+    auth = login(client, "other", "synthetic-password-2")
+
+    resp = client.post(
+        "/runner/users/" + other["id"] + "/reset-password",
+        json={"new_password": "brand-new-password-1"},
+        headers=auth,
+    )
+    assert resp.status_code == 403
+
+
+def test_reset_password_rejects_short_password(system):
+    _, _, _, _, other, _, client = system
+    admin_auth = login(client)
+
+    resp = client.post(
+        "/runner/users/" + other["id"] + "/reset-password",
+        json={"new_password": "short"},
+        headers=admin_auth,
+    )
+    assert resp.status_code == 400
+
+
 def test_claim_is_atomic_and_never_reexecutes_active_job(system):
     s, _, _, owner, _, agent, _ = system
     run = create(s, owner, agent)

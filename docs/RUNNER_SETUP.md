@@ -58,6 +58,42 @@ khi kết thúc hoặc job hết hạn. Validator không thể nhận diện m�
 trong Excel; người vận hành phải kiểm tra trước khi upload. Dùng `${TEN_BIEN}`
 cho giá trị cần resolve từ môi trường local.
 
+## Tạo admin khi deploy (Postgres)
+
+Mặc định Runner dùng SQLite (`data/runner.db`) — phù hợp chạy local, nhưng khi deploy
+container lên GreenNode (hoặc bất kỳ nền tảng nào khác), file SQLite trong container
+là **ephemeral** (mất khi container restart) trừ khi bạn tự mount volume bền vững.
+Dùng Postgres cho môi trường deploy thật để tránh mất dữ liệu user/run:
+
+1. Chuẩn bị 1 Postgres server mà **cả 2 nơi** đều kết nối tới được: API đang chạy
+   trên GreenNode, VÀ máy bạn (để chạy script bootstrap 1 lần). Khuyến nghị dùng
+   database riêng cho Runner, tách khỏi database của crawl-agent (`DB_BACKEND=postgres`)
+   dù bảng đã có tiền tố `runner_*` — tránh lẫn dữ liệu 2 module khi backup/restore.
+
+2. Set biến môi trường khi deploy Runtime API trên GreenNode:
+   ```env
+   RUNNER_ENABLED=true
+   RUNNER_DATABASE_URL=postgresql://user:pass@<host-postgres>:5432/runnerdb
+   ```
+   API tự `CREATE TABLE IF NOT EXISTS` cho cả 6 bảng (`runner_users`, `runner_sessions`,
+   `runner_agents`, `runner_runs`, `runner_audit`, `runner_notifications`) ngay lần đầu
+   kết nối — không cần chạy migration riêng.
+
+3. Tạo admin đầu tiên — chạy **NGAY TRÊN MÁY BẠN** (không cần shell vào container
+   GreenNode), trỏ đúng cùng Postgres:
+   ```bash
+   python scripts/create_runner_admin.py --username runneradmin --postgres-dsn "postgresql://user:pass@<host-postgres>:5432/runnerdb"
+   ```
+   Máy bạn cần kết nối mạng tới được Postgres đó (IP whitelist/VPN/bastion tuỳ hạ tầng
+   GreenNode cấp — không nằm trong phạm vi repo này). Script chỉ chạy được khi database
+   **chưa có user nào** — chạy 1 lần duy nhất lúc khởi tạo, không chạy lại.
+
+4. Sau khi có admin đầu tiên, **không cần CLI nữa** — đăng nhập UI Runner bằng tài
+   khoản vừa tạo, vào tab **Quản trị** để tự tạo thêm user/admin khác (`POST /users`)
+   hoặc đặt lại mật khẩu cho user quên mật khẩu (`POST /users/{id}/reset-password` —
+   không có luồng tự phục vụ qua email, admin đặt trực tiếp rồi tự báo lại cho user
+   qua kênh khác).
+
 ## Vận hành và giới hạn
 
 - UI container có `/health` kiểm tra nginx và `/ready` kiểm tra health Streamlit.

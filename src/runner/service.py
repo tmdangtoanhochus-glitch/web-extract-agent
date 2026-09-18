@@ -68,6 +68,21 @@ class Service:
     def public_user(user):
         return {k: v for k, v in user.items() if k != "password_hash"}
 
+    def reset_password(self, uid, new_password):
+        """Admin đặt lại mật khẩu cho user quên mật khẩu — không có luồng "tự
+        reset qua email" (chưa có hệ thống email), admin đặt trực tiếp mật khẩu
+        mới rồi báo lại cho user qua kênh khác (không phải trách nhiệm hệ thống)."""
+        if len(new_password) < 12:
+            raise RunnerError("Password tối thiểu 12 ký tự")
+        with self.repo.transaction():
+            target = self.repo.get("users", uid)
+            if not target:
+                raise RunnerError("Không tìm thấy user", 404)
+            target.update(password_hash=self.hasher.hash(new_password), updated_at=self.clock())
+            self.repo.put("users", uid, target)
+            self.audit("USER_PASSWORD_RESET", uid)
+            return self.public_user(target)
+
     def login(self, username, password):
         with self.repo.transaction():
             user = next((u for u in self.repo.all("users") if u["username"] == username), None)

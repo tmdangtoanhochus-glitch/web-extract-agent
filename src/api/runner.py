@@ -30,6 +30,10 @@ class Active(StrictModel):
     is_active: bool
 
 
+class ResetPassword(StrictModel):
+    new_password: str
+
+
 class RunCreate(StrictModel):
     agent_id: str
     config_name: str
@@ -212,6 +216,13 @@ def create_runner_router(service, planner=None):
             repo.put("users", uid, target)
             service.audit("USER_ACTIVE_CHANGED", u["id"])
         return service.public_user(target)
+
+    @router.post("/users/{uid}/reset-password")
+    def reset_password(uid: str, req: ResetPassword, u=Depends(admin)):
+        """Admin đặt lại mật khẩu cho user quên mật khẩu — không có luồng "quên
+        mật khẩu" tự phục vụ qua email (chưa có hệ thống gửi mail), chỉ admin
+        đặt trực tiếp rồi tự báo lại mật khẩu mới cho user qua kênh khác."""
+        return service.reset_password(uid, req.new_password)
 
     @router.post("/agents")
     def register(u=Depends(user)):
