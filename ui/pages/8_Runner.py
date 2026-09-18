@@ -58,6 +58,19 @@ if "runner_session" not in st.session_state:
         if result:
             st.session_state.runner_session = result["session"]
             st.rerun()
+
+    with st.expander("Quên mật khẩu?"):
+        st.caption(
+            "Gửi yêu cầu tới admin — admin sẽ đặt lại mật khẩu mới cho bạn và báo lại qua kênh khác "
+            "(hệ thống chưa gửi email tự động)."
+        )
+        with st.form("runner_forgot_password", clear_on_submit=True):
+            forgot_username = st.text_input("Username của bạn")
+            forgot_submitted = st.form_submit_button("Gửi yêu cầu tới admin")
+        if forgot_submitted:
+            result = api("POST", "/forgot-password", {"username": forgot_username})
+            if result:
+                st.success(result["detail"])
     st.stop()
 
 me = api("GET", "/me")
@@ -291,6 +304,18 @@ with tabs[3]:
 
 if me["role"] == "admin":
     with tabs[4]:
+        pending_resets = api("GET", "/password-reset-requests") or []
+        if pending_resets:
+            st.warning(f"Có {len(pending_resets)} yêu cầu quên mật khẩu đang chờ xử lý.")
+            for req in pending_resets:
+                st.write(
+                    f"**{req['username']}** — yêu cầu lúc "
+                    + datetime.fromtimestamp(req["created_at"], timezone.utc).isoformat()
+                )
+            st.caption("Cuộn xuống danh sách user bên dưới để đặt lại mật khẩu cho đúng người — "
+                       "request tự biến mất khỏi danh sách chờ ngay khi bạn đặt lại xong.")
+            st.markdown("---")
+
         with st.form("new_runner_user", clear_on_submit=True):
             new_name = st.text_input("Username mới")
             new_password = st.text_input("Mật khẩu (tối thiểu 12 ký tự)", type="password")

@@ -34,6 +34,10 @@ class ResetPassword(StrictModel):
     new_password: str
 
 
+class ForgotPassword(StrictModel):
+    username: str
+
+
 class RunCreate(StrictModel):
     agent_id: str
     config_name: str
@@ -184,6 +188,14 @@ def create_runner_router(service, planner=None):
     def login(req: Login):
         return service.login(req.username, req.password)
 
+    @router.post("/forgot-password")
+    def forgot_password(req: ForgotPassword):
+        """Công khai, KHÔNG cần đăng nhập — response luôn giống nhau dù username
+        có tồn tại hay không (tránh lộ username thật). Chỉ tạo request thật cho
+        admin nếu username khớp user active; admin xử lý ở tab Quản trị."""
+        service.request_password_reset(req.username)
+        return {"detail": "Nếu tài khoản tồn tại, admin sẽ nhận được yêu cầu đặt lại mật khẩu."}
+
     @router.post("/logout")
     def logout(u=Depends(user), token=Depends(bearer)):
         with repo.transaction():
@@ -223,6 +235,11 @@ def create_runner_router(service, planner=None):
         mật khẩu" tự phục vụ qua email (chưa có hệ thống gửi mail), chỉ admin
         đặt trực tiếp rồi tự báo lại mật khẩu mới cho user qua kênh khác."""
         return service.reset_password(uid, req.new_password)
+
+    @router.get("/password-reset-requests")
+    def password_reset_requests(u=Depends(admin)):
+        with repo.transaction():
+            return repo.all("password_reset_requests")
 
     @router.post("/agents")
     def register(u=Depends(user)):

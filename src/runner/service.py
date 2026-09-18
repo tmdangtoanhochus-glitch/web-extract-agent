@@ -71,7 +71,9 @@ class Service:
     def reset_password(self, uid, new_password):
         """Admin đặt lại mật khẩu cho user quên mật khẩu — không có luồng "tự
         reset qua email" (chưa có hệ thống email), admin đặt trực tiếp mật khẩu
-        mới rồi báo lại cho user qua kênh khác (không phải trách nhiệm hệ thống)."""
+        mới rồi báo lại cho user qua kênh khác (không phải trách nhiệm hệ thống).
+        Tự đánh dấu hết mọi yêu cầu "quên mật khẩu" đang chờ của user này —
+        admin xử lý xong thì request biến mất khỏi danh sách chờ."""
         if len(new_password) < 12:
             raise RunnerError("Password tối thiểu 12 ký tự")
         with self.repo.transaction():
@@ -81,7 +83,29 @@ class Service:
             target.update(password_hash=self.hasher.hash(new_password), updated_at=self.clock())
             self.repo.put("users", uid, target)
             self.audit("USER_PASSWORD_RESET", uid)
+            for req in self.repo.all("password_reset_requests"):
+                if req["user_id"] == uid:
+                    self.repo.delete("password_reset_requests", req["id"])
             return self.public_user(target)
+
+    def request_password_reset(self, username):
+        """Người dùng bị khoá tài khoản (quên mật khẩu) gửi yêu cầu — KHÔNG cần
+        đăng nhập (route công khai). CHỦ Ý không tiết lộ username có tồn tại
+        hay không qua response (tránh dò username): luôn coi như thành công,
+        chỉ thật sự tạo request nếu username khớp user đang active. Nhiều lần
+        gửi liên tiếp cho cùng user chỉ giữ 1 request đang chờ (idempotent),
+        tránh admin bị spam danh sách chờ."""
+        with self.repo.transaction():
+            user = next((u for u in self.repo.all("users") if u["username"] == username), None)
+            if not user or not user["is_active"]:
+                return
+            if any(r["user_id"] == user["id"] for r in self.repo.all("password_reset_requests")):
+                return
+            rid = uuid.uuid4().hex
+            self.repo.put("password_reset_requests", rid, {
+                "id": rid, "user_id": user["id"], "username": user["username"], "created_at": self.clock(),
+            })
+            self.audit("PASSWORD_RESET_REQUESTED", user["id"])
 
     def login(self, username, password):
         with self.repo.transaction():

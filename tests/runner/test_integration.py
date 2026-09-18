@@ -216,6 +216,66 @@ def test_reset_password_rejects_short_password(system):
     assert resp.status_code == 400
 
 
+def test_forgot_password_creates_pending_request_for_admin(system):
+    s, _, _, owner, other, _, client = system
+
+    resp = client.post("/runner/forgot-password", json={"username": "other"})
+    assert resp.status_code == 200
+
+    admin_auth = login(client)
+    pending = client.get("/runner/password-reset-requests", headers=admin_auth).json()
+    assert len(pending) == 1
+    assert pending[0]["username"] == "other"
+    assert pending[0]["user_id"] == other["id"]
+
+
+def test_forgot_password_does_not_leak_whether_username_exists(system):
+    s, _, _, owner, other, _, client = system
+
+    real_resp = client.post("/runner/forgot-password", json={"username": "other"})
+    fake_resp = client.post("/runner/forgot-password", json={"username": "does-not-exist"})
+
+    assert real_resp.status_code == fake_resp.status_code == 200
+    assert real_resp.json() == fake_resp.json()
+
+    admin_auth = login(client)
+    pending = client.get("/runner/password-reset-requests", headers=admin_auth).json()
+    assert len(pending) == 1  # chỉ request cho user thật tồn tại được tạo
+
+
+def test_forgot_password_is_idempotent_for_repeated_requests(system):
+    s, _, _, owner, other, _, client = system
+
+    client.post("/runner/forgot-password", json={"username": "other"})
+    client.post("/runner/forgot-password", json={"username": "other"})
+
+    admin_auth = login(client)
+    pending = client.get("/runner/password-reset-requests", headers=admin_auth).json()
+    assert len(pending) == 1  # gửi 2 lần vẫn chỉ 1 request đang chờ
+
+
+def test_reset_password_clears_pending_request_for_that_user(system):
+    s, _, _, owner, other, _, client = system
+    client.post("/runner/forgot-password", json={"username": "other"})
+    admin_auth = login(client)
+
+    client.post(
+        "/runner/users/" + other["id"] + "/reset-password",
+        json={"new_password": "brand-new-password-1"},
+        headers=admin_auth,
+    )
+
+    pending = client.get("/runner/password-reset-requests", headers=admin_auth).json()
+    assert pending == []
+
+
+def test_password_reset_requests_route_requires_admin(system):
+    _, _, _, _, other, _, client = system
+    auth = login(client, "other", "synthetic-password-2")
+
+    assert client.get("/runner/password-reset-requests", headers=auth).status_code == 403
+
+
 def test_claim_is_atomic_and_never_reexecutes_active_job(system):
     s, _, _, owner, _, agent, _ = system
     run = create(s, owner, agent)

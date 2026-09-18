@@ -5,7 +5,7 @@ import threading
 from contextlib import contextmanager
 from pathlib import Path
 
-KINDS = {"users", "sessions", "agents", "runs", "audit", "notifications"}
+KINDS = {"users", "sessions", "agents", "runs", "audit", "notifications", "password_reset_requests"}
 
 
 class Repository:
