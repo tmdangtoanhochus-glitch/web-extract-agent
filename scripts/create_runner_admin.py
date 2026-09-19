@@ -37,7 +37,7 @@ if __name__ == "__main__":
     try:
         Service(repo, args.root).add_user(args.username, password, "admin", bootstrap=True)
         # Che mật khẩu trong DSN trước khi in ra terminal/log.
-        target = re.sub(r"(://[^:/@]+:)[^@]*@", r"********@", args.postgres_dsn) if args.postgres_dsn else args.db
+        target = re.sub(r"(://[^:/@]+:)[^@]*@", r"\1********@", args.postgres_dsn) if args.postgres_dsn else args.db
         print(f"Đã tạo admin Runner trên {target}")
     finally:
         repo.close()
