@@ -5,6 +5,8 @@
   Trái tim 🧡 thay bằng huy hiệu **MSB**; đặt file `ui/assets/msb_logo.png` (.svg/.jpg/.webp) để dùng logo thật ở banner và biểu tượng tab.
 - **Automation:** hướng dẫn cài Python (8 bước, lỗi thường gặp, lệnh agent điền sẵn địa chỉ API) hiện **sau khi đăng nhập**, mở sẵn ở lần đầu của phiên,
   thu gọn các lần sau (`ui/runner_setup_guide.py`).
+- **Thanh bên:** mục điều hướng (Crawl/Automation/Admin) dạng thẻ nổi khối, mục đang chọn có gradient, hiệu ứng khi rê chuột; nút đóng/mở thanh bên là nút bo góc nổi khối.
+  Logo tự nhận dạng nền trong suốt hoặc nền liền và tự thu nhỏ (`ui/theme.py`).
 - **Cookie:** giữ nguyên thiết kế của Kiên (dán ở Bước 3, không lưu, xóa sau mỗi lần gửi), thêm **cảnh báo rủi ro** và ô xác nhận bắt buộc
   ("Tôi hiểu các rủi ro ... và chấp nhận") — chưa tích thì không chạy và không gửi cookie. Áp dụng cả cho "Chạy lại lượt lỗi".
 - **Lưu ý website chặn tự động** (`ui/notices.py`) ở Crawl Bước 1 và Automation: CAPTCHA, WAF/bot protection, giới hạn tốc độ/IP, nhận diện headless, OTP/2FA,

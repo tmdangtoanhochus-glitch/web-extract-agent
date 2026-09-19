@@ -105,7 +105,42 @@ button[data-baseweb="tab"][aria-selected="true"] p, div[data-testid="stTab"][ari
 div[data-testid="stExpander"] { background:#fff; border:1px solid var(--msb-border); border-radius:14px; box-shadow:var(--mp-shadow); }
 div[data-testid="stForm"] { background:#fff; border:1px solid var(--msb-border); border-radius:14px; box-shadow:var(--mp-shadow); }
 div[data-testid="stAlert"] { border-radius:12px; box-shadow:0 1px 4px rgba(0,0,0,.06); }
-section[data-testid="stSidebar"] { border-right:1px solid var(--msb-border); }
+
+/* Thanh bên: nền nổi khối, mục điều hướng dạng thẻ nổi, mục đang chọn có gradient */
+section[data-testid="stSidebar"] {
+  border-right:1px solid var(--msb-border);
+  background:linear-gradient(180deg,#FFFFFF 0%,#FFF5EE 100%);
+  box-shadow:6px 0 26px rgba(120,60,20,.12);
+}
+div[data-testid="stSidebarNavItems"] { gap:10px; padding:8px 12px 12px 12px; }
+a[data-testid="stSidebarNavLink"] {
+  background:#fff; border:1px solid var(--msb-border); border-radius:14px; padding:12px 16px; margin:0;
+  box-shadow:var(--mp-shadow); transition:transform .14s ease, box-shadow .14s ease, border-color .14s ease;
+}
+a[data-testid="stSidebarNavLink"] span, a[data-testid="stSidebarNavLink"] p { font-weight:600; color:#3a2c26; font-size:15px; }
+a[data-testid="stSidebarNavLink"]:hover {
+  transform:translateY(-2px) translateX(3px); box-shadow:var(--mp-shadow-hover); border-color:var(--msb-orange);
+}
+a[data-testid="stSidebarNavLink"][aria-current="page"] {
+  background:linear-gradient(135deg,var(--msb-red),var(--msb-orange)); border-color:transparent;
+  box-shadow:0 8px 20px rgba(237,28,36,.32);
+}
+a[data-testid="stSidebarNavLink"][aria-current="page"] span, a[data-testid="stSidebarNavLink"][aria-current="page"] p { color:#fff; }
+
+/* Nút đóng/mở thanh bên: nút vuông bo góc nổi khối, rê chuột chuyển gradient */
+div[data-testid="stSidebarCollapseButton"] button, button[data-testid="stExpandSidebarButton"],
+div[data-testid="stSidebarCollapsedControl"] button {
+  width:42px; height:42px; border-radius:14px; background:#fff; border:1px solid var(--msb-border);
+  box-shadow:var(--mp-shadow); transition:transform .14s ease, box-shadow .14s ease, background .14s ease;
+  display:inline-flex; align-items:center; justify-content:center; opacity:1;
+}
+div[data-testid="stSidebarCollapseButton"] button:hover, button[data-testid="stExpandSidebarButton"]:hover,
+div[data-testid="stSidebarCollapsedControl"] button:hover {
+  transform:translateY(-2px) scale(1.05); box-shadow:var(--mp-shadow-hover);
+  background:linear-gradient(135deg,var(--msb-red),var(--msb-orange));
+}
+div[data-testid="stSidebarCollapseButton"] button:hover *, button[data-testid="stExpandSidebarButton"]:hover *,
+div[data-testid="stSidebarCollapsedControl"] button:hover * { color:#fff !important; fill:#fff !important; }
 
 .mp-status-saved { color:var(--msb-green); font-weight:700; }
 .mp-status-unchanged { color:#8a8380; font-weight:700; }

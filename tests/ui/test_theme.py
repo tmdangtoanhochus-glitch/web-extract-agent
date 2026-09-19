@@ -60,3 +60,8 @@ def test_logo_is_downscaled_to_keep_the_page_light(tmp_path, monkeypatch):
     uri, _ = theme._logo_data(str(tmp_path / "big.jpg"), (tmp_path / "big.jpg").stat().st_mtime)
     image = Image.open(io.BytesIO(base64.b64decode(uri.split(",", 1)[1])))
     assert max(image.size) <= 320
+
+
+def test_css_styles_sidebar_navigation_and_toggle_button_as_raised_blocks():
+    assert 'a[data-testid="stSidebarNavLink"]' in theme.CSS and 'aria-current="page"' in theme.CSS
+    assert 'stSidebarCollapseButton' in theme.CSS and 'stExpandSidebarButton' in theme.CSS
