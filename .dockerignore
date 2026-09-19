@@ -29,3 +29,6 @@ config
 **/secrets.toml
 **/discovery.json
 **/Repair_Proposal.json
+
+.greennode.json
+.agentbase

@@ -37,3 +37,7 @@ test-results/
 .DS_Store
 .vscode/*
 !.vscode/extensions.json
+
+# GreenNode AgentBase credentials va cache token (skill agentbase)
+.greennode.json
+.agentbase/
