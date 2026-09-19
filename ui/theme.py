@@ -1,6 +1,6 @@
 """Giao diện dùng chung cho Crawl, Automation và Admin (cùng banner, thẻ nổi khối, tab nổi khối, logo MSB).
 
-Logo: đặt file `ui/assets/msb_logo.png` (hoặc .svg/.jpg/.webp) — nếu có, banner và biểu tượng tab dùng file đó;
+Logo: thả một file ảnh (.png/.svg/.jpg/.webp, tên bất kỳ) vào `ui/assets/` — nếu có, banner và biểu tượng tab dùng file đó;
 chưa có thì dùng huy hiệu chữ "MSB" cùng bảng màu.
 """
 from __future__ import annotations
@@ -116,11 +116,16 @@ section[data-testid="stSidebar"] { border-right:1px solid var(--msb-border); }
 
 
 def _logo_path() -> Optional[Path]:
+    """File logo trong ui/assets: ưu tiên tên `msb_logo.*`, nếu không có thì lấy file ảnh đầu tiên (theo tên) —
+    nên `hinh-logo-ngan-hang-msb.webp` hay bất kỳ tên nào đều dùng được, không cần đổi tên."""
+    if not _ASSETS.is_dir():
+        return None
     for name in _LOGO_NAMES:
         path = _ASSETS / name
         if path.is_file():
             return path
-    return None
+    images = sorted(p for p in _ASSETS.iterdir() if p.is_file() and p.suffix.lower() in _MIME)
+    return images[0] if images else None
 
 
 def logo_html() -> str:

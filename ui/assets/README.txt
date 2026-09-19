@@ -1,1 +1,1 @@
-Đặt logo MSB tại đây với tên msb_logo.png (hoặc .svg/.jpg/.webp). ui/theme.py tự nhận file này.
+Thả file logo MSB vào thư mục này (.png / .svg / .jpg / .webp, tên bất kỳ). ui/theme.py tự nhận.

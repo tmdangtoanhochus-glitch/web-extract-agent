@@ -18,3 +18,11 @@ def test_logo_uses_asset_file_when_present(tmp_path, monkeypatch):
 def test_css_styles_tabs_as_raised_blocks_for_both_streamlit_dom_variants():
     assert 'div[role="tab"]' in theme.CSS and 'button[data-baseweb="tab"]' in theme.CSS
     assert "box-shadow" in theme.CSS and "aria-selected" in theme.CSS
+
+
+def test_logo_accepts_any_image_filename_and_ignores_non_images(tmp_path, monkeypatch):
+    (tmp_path / "README.txt").write_text("x", encoding="utf-8")
+    (tmp_path / "hinh-logo-ngan-hang-msb.webp").write_bytes(b"RIFFxxxxWEBPfake")
+    monkeypatch.setattr(theme, "_ASSETS", tmp_path)
+    html = theme.logo_html()
+    assert "data:image/webp;base64," in html and "mp-logo-badge" not in html
