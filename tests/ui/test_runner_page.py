@@ -165,3 +165,14 @@ def test_describe_requires_review_and_clears_draft_on_logout(monkeypatch):
     assert app.session_state["runner_describe_draft"] == b"synthetic-workbook"
     next(b for b in app.button if b.label == "Đăng xuất Runner").click().run()
     assert "runner_describe_draft" not in app.session_state
+
+
+def test_login_screen_shows_python_setup_guide_before_login():
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.run()
+    assert not app.exception
+    guide = next(e for e in app.expander if "Cài môi trường Python" in e.label)
+    assert guide.proto.expanded  # mở sẵn để người dùng mới thấy ngay
+    text = " ".join(str(c.value) for c in app.code)
+    assert "python -m venv .venv" in text and "playwright install chromium" in text
+    assert "local_runner_agent.py" in text

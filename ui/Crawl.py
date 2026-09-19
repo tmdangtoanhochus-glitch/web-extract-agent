@@ -22,13 +22,13 @@ import os
 from html import escape
 from urllib.parse import urlsplit, urlunsplit
 try:
-    from ui.crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls
+    from ui.crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls, cookie_section
     from ui.crawl_jobs import submit_background, render_background
     from ui.schedule_controls import schedule_controls
 except ModuleNotFoundError as exc:
     if exc.name != "ui":
         raise
-    from crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls
+    from crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls, cookie_section
     from crawl_jobs import submit_background, render_background
     from schedule_controls import schedule_controls
 try:
@@ -296,6 +296,8 @@ def _render_step1() -> None:
         if new_url.strip() not in st.session_state.urls:
             st.session_state.urls.append(new_url.strip())
 
+    cookie_section(st.session_state.urls)
+
     with st.expander("Phân trang — cào nhiều page liên tiếp", expanded=False):
         st.caption("Dùng `{page}` làm số trang trong URL. VD: `https://books.toscrape.com/catalogue/page-{page}.html`")
         st.markdown(
@@ -490,6 +492,11 @@ def _render_step3() -> None:
     busy = bool(active_job and not active_job.get("handled"))
     submitted, cookie_origin, request_cookie, preview = run_controls(st.session_state.urls, bool(crawl_options), busy)
     if submitted or preview:
+        if submitted:
+            # Cookie đã được lấy vào biến cục bộ `request_cookie` ở trên: xóa khỏi bộ nhớ phiên NGAY khi bắt đầu chạy.
+            # (Xem trước không xóa để người dùng còn chạy thật.)
+            st.session_state.cookie_value = ""
+            st.session_state.cookie_origin = None
         st.session_state.crawl_ui_error = None
         st.session_state.crawl_previews = []
         if submitted:

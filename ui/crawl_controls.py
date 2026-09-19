@@ -79,21 +79,56 @@ def options_controls(fields):
     return options
 
 
+_COOKIE_HOWTO = """
+1. Mở website cần lấy dữ liệu và **tự đăng nhập** bằng trình duyệt của bạn (Chrome, Edge hoặc Firefox).
+2. Nhấn **F12** (hoặc chuột phải → *Kiểm tra / Inspect*) rồi chọn tab **Network** (Mạng).
+3. Tải lại trang (**F5**), bấm vào request **đầu tiên** trong danh sách (loại *document*, tên trùng với trang).
+4. Ở khung bên phải chọn **Headers** → kéo xuống **Request Headers** → tìm dòng **Cookie**. Bấm chuột phải vào giá trị → **Copy value**
+   (hoặc bôi đen và copy **phần sau chữ `Cookie:`**).
+5. Chọn đúng nguồn bên dưới và **dán vào ô Cookie**.
+
+⚠️ Chỉ dán **giá trị Cookie**. Không dán mật khẩu, `Authorization`, `Set-Cookie`, lệnh cURL hoặc file HAR.
+Cookie giống như chìa khóa đăng nhập của bạn: chỉ dùng phiên bạn được phép truy cập, và khi bạn đăng xuất hoặc cookie hết hạn thì phải lấy lại.
+"""
+
+
+def cookie_section(urls):
+    """Khối dán cookie ở Bước 1 (cho nguồn cần đăng nhập). Cookie CHỈ nằm trong bộ nhớ phiên làm việc này: không ghi DB, không ghi file,
+    không dùng cho lịch tự động, tự xóa ngay sau khi bấm Chạy crawl (xem `ui/Crawl.py`) hoặc khi bấm Xóa."""
+    st.markdown('<div class="mp-section-label">Trang cần đăng nhập? Dán cookie (tùy chọn)</div>', unsafe_allow_html=True)
+    with st.expander("📖 Cách lấy cookie từ trình duyệt", expanded=True):
+        st.markdown(_COOKIE_HOWTO)
+    origins = sorted({f"{urlsplit(url).scheme}://{urlsplit(url).netloc}" for url in urls})
+    if not origins:
+        st.caption("Thêm ít nhất một link ở trên, rồi chọn nguồn dùng cookie tại đây.")
+        return
+    saved_origin = st.session_state.get("cookie_origin")
+    origin = st.selectbox("Nguồn được dùng cookie", origins,
+                          index=origins.index(saved_origin) if saved_origin in origins else 0)
+    cookie = st.text_input("Cookie", value=st.session_state.get("cookie_value", ""), type="password", key="cookie_input",
+                           placeholder="Dán giá trị Cookie vào đây (bỏ trống nếu trang không cần đăng nhập)")
+    st.session_state.cookie_origin = origin
+    st.session_state.cookie_value = cookie.strip()
+    if st.session_state.cookie_value:
+        st.success(f"Đã nhận cookie cho {origin}. Chỉ giữ trong phiên này, dùng cho lượt chạy tiếp theo rồi **tự xóa**; "
+                   "không lưu vào DB, không dùng cho lịch tự động.")
+        st.button("Xóa cookie đã dán", key="clear_cookie", on_click=clear_cookie)
+
+
+def clear_cookie():
+    st.session_state.cookie_value = ""
+    st.session_state.cookie_input = ""  # xóa cả nội dung ô nhập
+    st.session_state.cookie_origin = None
+
+
 def run_controls(urls, bulk_enabled=False, busy=False):
     with st.form("crawl_with_cookie", clear_on_submit=True):
-        with st.expander("Nguồn cần đăng nhập: dán cookie cho lượt kéo này"):
-            st.markdown("""1. Mở website nguồn, tự đăng nhập bằng trình duyệt.
-2. Nhấn **F12 → Network**, tải lại trang và chọn request lấy dữ liệu cần kéo.
-3. Mở **Headers → Request Headers → Cookie**; sao chép **chỉ giá trị** của Cookie.
-4. Chọn đúng nguồn bên dưới và dán vào ô. Không dán mật khẩu, Authorization, Set-Cookie, cURL hoặc HAR.
-
-[Hướng dẫn Network của Chrome](https://developer.chrome.com/docs/devtools/network/reference).
-Cookie chỉ dùng cho đợt kéo này, không lưu DB, không dùng cho lịch tự động.
-Chỉ dùng phiên bạn được phép truy cập, qua kết nối HTTPS khi triển khai.
-""")
-            origins = sorted({f"{urlsplit(url).scheme}://{urlsplit(url).netloc}" for url in urls})
-            origin = st.selectbox("Nguồn được dùng cookie", origins) if origins else None
-            cookie = st.text_input("Cookie cho lượt kéo", type="password")
+        origin = st.session_state.get("cookie_origin")
+        cookie = st.session_state.get("cookie_value", "")
+        if cookie:
+            st.caption(f"🔐 Sẽ dùng cookie đã dán ở Bước 1 cho {origin}. Cookie tự xóa sau lượt chạy này.")
+        else:
+            st.caption("Trang cần đăng nhập? Quay lại Bước 1 để dán cookie (có hướng dẫn cách lấy).")
         with st.expander("robots.txt (mặc định: luôn tôn trọng)"):
             st.warning("Hệ thống mặc định KIỂM TRA robots.txt và bỏ qua trang bị chặn. Chỉ bật bỏ qua khi "
                        "bạn là chủ website hoặc có sự cho phép. Hành động này chỉ áp dụng cho lượt kéo này, "

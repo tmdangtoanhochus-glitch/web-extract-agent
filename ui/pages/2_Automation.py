@@ -74,11 +74,19 @@ except ModuleNotFoundError as exc:
     if exc.name != "ui":
         raise
     from feedback import feedback_panel
+try:
+    from ui.runner_setup_guide import render as render_setup_guide
+except ModuleNotFoundError as exc:
+    if exc.name != "ui":
+        raise
+    from runner_setup_guide import render as render_setup_guide
 with st.sidebar:
     feedback_panel(_feedback_post, "runner")
 
 
 if "runner_session" not in st.session_state:
+    # Người dùng mới cần biết phải cài gì TRƯỚC khi đăng nhập -> mở sẵn.
+    render_setup_guide(expanded=True)
     with st.form("runner_login", clear_on_submit=True):
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
@@ -103,26 +111,7 @@ if "runner_session" not in st.session_state:
                 st.success(result["detail"])
     st.stop()
 
-with st.expander("ℹ️ Chạy ở đâu? Máy của bạn cần gì?"):
-    st.markdown(
-        """
-**Trang web này** chỉ là bảng điều khiển: đăng nhập, mô tả flow (Describe), xem lịch sử và kết quả.
-Các bước thao tác trình duyệt thật chạy **trên máy của bạn**, không chạy trên server:
-
-| Việc | Chạy ở đâu | Lệnh |
-|---|---|---|
-| Ghi thao tác (Record) | Máy bạn | `python record_runner.py` |
-| Xem cấu trúc trang (Inspector) | Máy bạn | `python inspect_runner.py` |
-| Chạy testcase | Máy bạn (agent) | `python local_runner_agent.py --api <địa chỉ API> --env-path runner.env` |
-
-**Máy của bạn cần:** Python 3.12, cài thư viện (`pip install -r requirements.txt -r requirements-auth.txt -r requirements-runner.txt`)
-và trình duyệt (`python -m playwright install chromium`).
-
-**Tài khoản của trang được test** (user/pass) chỉ nằm trong file `runner.env` trên máy bạn (mẫu: `runner.env.example`),
-**không bao giờ tải lên server**. Workbook chỉ ghi tên role/placeholder, không ghi mật khẩu.
-Hướng dẫn cài từng bước: `docs/RUNNER_LOCAL_SETUP.md`.
-        """
-    )
+render_setup_guide(expanded=False)
 
 me = api("GET", "/me")
 if not me:

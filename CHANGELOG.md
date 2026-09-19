@@ -1,5 +1,14 @@
 # Changelog
 
+## Cookie ở Bước 1 + hướng dẫn cài Python trên trang Automation — 2026-09-19
+- **Cookie:** ô dán cookie chuyển ra Bước 1 (Nguồn dữ liệu), kèm hướng dẫn F12 → Network → Request Headers → Cookie. Cookie chỉ nằm trong bộ nhớ
+  phiên: không ghi DB/file, không dùng cho lịch tự động, tự xóa ngay khi bấm "Chạy crawl" (xem trước không xóa) hoặc khi bấm "Xóa cookie đã dán".
+- **Automation:** hướng dẫn cài Python đầy đủ (8 bước, lỗi thường gặp, lệnh agent điền sẵn địa chỉ API) hiển thị ngay trên trang, mở sẵn ở màn đăng nhập
+  (`ui/runner_setup_guide.py`); trước đây chỉ có khung thu gọn sau khi đăng nhập.
+- **Sửa lỗi deploy:** trang Automation trên bản deploy báo `No module named 'ui'` vì `streamlit run ui/Crawl.py` chỉ thêm `ui/` vào `sys.path`;
+  thêm `ENV PYTHONPATH=/app` trong `Dockerfile.ui`, các trang tự thêm thư mục gốc, và test chặn tái diễn.
+- Test: 600 pass.
+
 ## Giữ URL ảnh khi làm sạch + RUNNER_AI_MODEL — 2026-09-19
 - `clean_html(html, base_url)` chuyển mỗi `<img>` thành `![alt](url tuyệt đối)` đúng vị trí trong trang (ưu tiên `data-src`/lazy-load,
   rồi `srcset`, rồi `src`; bỏ ảnh `data:`/`blob:` và pixel 1-2px). Trước đây `<img>` bị bỏ hết nên field ảnh (`image_fields`) luôn rỗng.
