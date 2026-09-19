@@ -3,6 +3,14 @@ from datetime import date, timedelta
 from urllib.parse import urlsplit, urlencode
 import streamlit as st
 
+try:
+    from ui.notices import COOKIE_CONSENT_LABEL, cookie_risk_panel
+except ModuleNotFoundError as exc:
+    if exc.name != "ui":
+        raise
+    from notices import COOKIE_CONSENT_LABEL, cookie_risk_panel
+
+
 
 def export_controls(dataset_id, api_download):
     with st.expander("Xuất toàn bộ dataset", expanded=False):
@@ -94,6 +102,8 @@ Chỉ dùng phiên bạn được phép truy cập, qua kết nối HTTPS khi tr
             origins = sorted({f"{urlsplit(url).scheme}://{urlsplit(url).netloc}" for url in urls})
             origin = st.selectbox("Nguồn được dùng cookie", origins) if origins else None
             cookie = st.text_input("Cookie cho lượt kéo", type="password")
+            cookie_risk_panel()
+            cookie_consent = st.checkbox(COOKIE_CONSENT_LABEL, key="cookie_consent_run")
         with st.expander("robots.txt (mặc định: luôn tôn trọng)"):
             st.warning("Hệ thống mặc định KIỂM TRA robots.txt và bỏ qua trang bị chặn. Chỉ bật bỏ qua khi "
                        "bạn là chủ website hoặc có sự cho phép. Hành động này chỉ áp dụng cho lượt kéo này, "
@@ -103,6 +113,10 @@ Chỉ dùng phiên bạn được phép truy cập, qua kết nối HTTPS khi tr
         submitted = st.form_submit_button("🚀 Chạy crawl", type="primary", disabled=busy)
         preview = st.form_submit_button("Xem trước đợt kéo", disabled=not bulk_enabled or busy)
         st.caption("Xem trước bảng chỉ tải trang đầu, không lưu record. Cookie được xóa sau mỗi lần gửi; cần dán lại khi chạy thật.")
+    if cookie and not cookie_consent and (submitted or preview):
+        st.error("Bạn đã dán cookie nhưng chưa tích xác nhận chấp nhận rủi ro nên **chưa chạy**. "
+                 "Tích ô xác nhận (hoặc xóa cookie) rồi thử lại.")
+        return False, origin, "", False
     return submitted, origin, cookie, preview
 
 
@@ -148,7 +162,12 @@ def retry_panel(api_post):
                    "Nếu cần sửa cấu hình, hãy chạy đợt mới với dataset có sẵn.")
         st.write("Nguồn:", candidates[index]["url"])
         cookie = st.text_input("Cookie mới cho nguồn này (nếu cần)", type="password")
+        cookie_risk_panel()
+        cookie_consent = st.checkbox(COOKIE_CONSENT_LABEL, key="cookie_consent_retry")
         retry = st.form_submit_button("Chạy lại lượt lỗi")
+    if retry and cookie and not cookie_consent:
+        st.error("Bạn đã dán cookie nhưng chưa tích xác nhận chấp nhận rủi ro nên **chưa chạy lại**.")
+        return
     if retry:
         entry = candidates[index]
         body = {**entry["_retry_config"], "retry_of": entry["request_id"], "dataset_id": entry["dataset_id"]}

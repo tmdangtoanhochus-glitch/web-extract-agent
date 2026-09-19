@@ -77,10 +77,12 @@ except ModuleNotFoundError as exc:
     from feedback import feedback_panel
 try:
     from ui.runner_setup_guide import render as render_setup_guide
+    from ui.runner_overview import render as render_overview
 except ModuleNotFoundError as exc:
     if exc.name != "ui":
         raise
     from runner_setup_guide import render as render_setup_guide
+    from runner_overview import render as render_overview
 with st.sidebar:
     feedback_panel(_feedback_post, "runner")
 
@@ -111,6 +113,7 @@ if "runner_session" not in st.session_state:
     st.stop()
 
 # Hiện sau khi đăng nhập: mở sẵn ở lần đầu của phiên, các lần sau thu gọn (vẫn nằm ngay đầu trang).
+render_overview(expanded=not st.session_state.get("runner_guide_seen", False))
 render_setup_guide(expanded=not st.session_state.get("runner_guide_seen", False))
 st.session_state.runner_guide_seen = True
 

@@ -189,4 +189,7 @@ def test_setup_guide_is_hidden_on_login_screen_and_shown_after_login(monkeypatch
     assert not app.exception
     guide = next(e for e in app.expander if "Cài môi trường Python" in e.label)
     assert guide.proto.expanded
+    overview = next(e for e in app.expander if "Automation là gì" in e.label)
+    assert overview.proto.expanded
+    assert any("chặn hoặc không cho phép truy cập tự động" in str(w.value) for w in app.warning)
     assert "python -m venv .venv" in " ".join(str(c.value) for c in app.code)

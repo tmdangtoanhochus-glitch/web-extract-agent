@@ -42,6 +42,7 @@ from typing import Any, Optional
 import httpx
 import streamlit as st
 from ui.theme import apply_theme, hero
+from ui.notices import blocking_notice
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
@@ -243,6 +244,8 @@ def _render_step1() -> None:
     if st.button("+ Thêm link") and new_url.strip():
         if new_url.strip() not in st.session_state.urls:
             st.session_state.urls.append(new_url.strip())
+
+    blocking_notice()
 
     with st.expander("Phân trang — cào nhiều page liên tiếp", expanded=False):
         st.caption("Dùng `{page}` làm số trang trong URL. VD: `https://books.toscrape.com/catalogue/page-{page}.html`")

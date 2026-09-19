@@ -27,6 +27,7 @@ def test_cookie_and_report_after_rendering_error(monkeypatch):
     app.run()
     assert not app.exception
     next(w for w in app.text_input if w.label == "Cookie cho lượt kéo").set_value("session=synthetic-cookie")
+    app.checkbox(key="cookie_consent_run").check()
     next(w for w in app.button if w.label == "🚀 Chạy crawl").click().run()
     assert not app.exception
     assert app.session_state["crawl_ui_error"]["error_type"] == "TypeError"
@@ -125,6 +126,7 @@ def test_retry_uses_original_config_and_fresh_cookie_without_retaining_it(monkey
     app.run()
     assert not app.exception, [e.value for e in app.exception]
     next(w for w in app.text_input if w.label == "Cookie mới cho nguồn này (nếu cần)").set_value("session=synthetic")
+    app.checkbox(key="cookie_consent_retry").check()
     next(w for w in app.button if w.label == "Chạy lại lượt lỗi").click().run()
     assert not app.exception
     body = calls[0][1]
@@ -209,6 +211,7 @@ def test_background_submission_and_pause_resume_controls(monkeypatch):
     app.run()
     next(w for w in app.checkbox if w.label == "Kéo nhiều lượt / kéo bảng").check().run()
     next(w for w in app.text_input if w.label == "Cookie cho lượt kéo").set_value("session=synthetic-cookie")
+    app.checkbox(key="cookie_consent_run").check()
     next(w for w in app.button if w.label == "🚀 Chạy crawl").click().run()
     assert not app.exception
     assert calls[0][0] == "/crawl-jobs"
@@ -246,3 +249,38 @@ def test_schedule_pause_and_timing_edit_do_not_change_crawl_config(monkeypatch):
     assert not app.exception and job["trigger_args"]["hours"] == 6 and job["enabled"] is False
     assert all(set(body) <= {"enabled", "trigger_type", "trigger_args"} for _, body in calls)
     assert job["dataset_id"] == "d1" and job["url"] == "https://example.test/"
+
+
+def test_cookie_without_risk_consent_is_not_sent_and_run_is_blocked(monkeypatch):
+    calls = []
+
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def get(self, path, **kw):
+            return httpx.Response(200, json=[], request=httpx.Request("GET", "http://t"))
+        def post(self, path, json=None, **kw):
+            calls.append(path)
+            return httpx.Response(200, json={"status": "saved"}, request=httpx.Request("POST", "http://t"))
+    monkeypatch.setattr(httpx, "Client", Client)
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.session_state["step"] = 3
+    app.session_state["urls"] = ["https://example.test/page"]
+    app.session_state["fields"] = [{"name": "price", "desc": "Price"}]
+    app.session_state["dataset_name"] = "History"
+    app.run()
+    assert any("Rủi ro khi dùng cookie" in str(w.value) for w in app.warning)  # cảnh báo hiển thị
+    next(w for w in app.text_input if w.label == "Cookie cho lượt kéo").set_value("session=abc")
+    next(w for w in app.button if w.label == "🚀 Chạy crawl").click().run()
+    assert any("chưa tích xác nhận" in str(e.value) for e in app.error)
+    assert "/crawl" not in calls  # không chạy khi chưa chấp nhận rủi ro
+
+
+def test_step1_shows_blocking_notice_about_captcha_and_bot_protection():
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.session_state["step"] = 1
+    app.run()
+    assert not app.exception
+    assert any("chặn hoặc không cho phép truy cập tự động" in str(w.value) for w in app.warning)
+    assert any("CAPTCHA" in str(m.value) for m in app.markdown)
