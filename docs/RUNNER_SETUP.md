@@ -19,6 +19,8 @@ Chỉ khi yêu cầu AI discovery/repair, cấu trúc đã rà soát được g�
 screenshot nằm trong thư mục state trên máy agent. Masking không bảo đảm loại
 bỏ mọi dữ liệu nghiệp vụ trên trang; không gửi các artifact này cho AI/cloud.
 
+> **Người dùng cuối:** xem hướng dẫn từng bước tạo môi trường Python trên máy cá nhân tại `docs/RUNNER_LOCAL_SETUP.md`.
+
 ## Cài và bật
 
 Chạy từ thư mục gốc project trong môi trường Python đang dùng cho ứng dụng:
@@ -34,7 +36,7 @@ python -m uvicorn src.api.main:app --host 127.0.0.1 --port 8000
 Bootstrap hỏi mật khẩu bằng đầu vào ẩn, chỉ dùng cho database Runner SQLite
 mặc định `data/runner.db`. Không chạy lại bootstrap trên database đã có user.
 API và bootstrap phải trỏ cùng database nếu đổi đường dẫn. Backend PostgreSQL
-có adapter nhưng chưa được kiểm chứng integration; chưa dùng làm cấu hình triển khai.
+đã được kiểm chứng trên Postgres 16 thật (ghi, kết nối lại, đăng nhập, reset mật khẩu) — xem mục "Tạo admin khi deploy (Postgres)".
 
 Ở terminal khác, chạy UI như trước:
 
@@ -42,7 +44,7 @@ có adapter nhưng chưa được kiểm chứng integration; chưa dùng làm c
 python -m streamlit run ui/Crawl.py
 ```
 
-Mở trang **Runner**, đăng nhập, tạo agent và giữ token được cấp một lần.
+Mở trang **Automation**, đăng nhập, tạo agent và giữ token được cấp một lần.
 Trên máy truy cập được hệ thống cần test, chuẩn bị thư mục `config` chứa workbook
 và file môi trường local theo `runner.env.example`. Chỉ người vận hành quản lý
 file thật, không upload hoặc gửi nội dung cho trợ lý.

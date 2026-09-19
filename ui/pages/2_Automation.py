@@ -112,7 +112,7 @@ và trình duyệt (`python -m playwright install chromium`).
 
 **Tài khoản của trang được test** (user/pass) chỉ nằm trong file `runner.env` trên máy bạn (mẫu: `runner.env.example`),
 **không bao giờ tải lên server**. Workbook chỉ ghi tên role/placeholder, không ghi mật khẩu.
-Hướng dẫn chi tiết: `docs/RUNNER_SETUP.md`.
+Hướng dẫn cài từng bước: `docs/RUNNER_LOCAL_SETUP.md`.
         """
     )
 
