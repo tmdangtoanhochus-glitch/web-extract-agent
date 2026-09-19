@@ -6,6 +6,8 @@ chưa có thì dùng huy hiệu chữ "MSB" cùng bảng màu.
 from __future__ import annotations
 
 import base64
+import io
+from functools import lru_cache
 from pathlib import Path
 from typing import Optional
 
@@ -44,6 +46,8 @@ CSS = """
   flex:0 0 auto; height:52px; width:auto; max-width:120px; border-radius:12px; background:#fff; padding:6px;
   box-shadow:0 3px 10px rgba(0,0,0,.18); object-fit:contain;
 }
+/* Ảnh logo có nền liền (không trong suốt): phủ kín khung, màu khung lấy theo nền ảnh */
+.mp-logo-img.solid { padding:0; object-fit:cover; max-width:96px; }
 
 .mp-pill {
   display:inline-flex; align-items:center; gap:6px; background:#FFF1E8; color:var(--msb-red);
@@ -128,12 +132,53 @@ def _logo_path() -> Optional[Path]:
     return images[0] if images else None
 
 
+@lru_cache(maxsize=4)
+def _logo_data(path_str: str, mtime: float) -> tuple[str, str | None]:
+    """Trả về (data URI, màu nền khung hoặc None).
+
+    - SVG: dùng nguyên file, khung trắng.
+    - Ảnh CÓ kênh trong suốt: giữ trong suốt, khung trắng (logo đỏ/cam không chìm vào banner đỏ).
+    - Ảnh nền LIỀN (vd. logo trên nền đen có hào quang): lấy màu 4 góc làm màu khung để ảnh hòa vào khung.
+    Ảnh được thu nhỏ (<= 320px) để trang nhẹ.
+    """
+    path = Path(path_str)
+    raw = path.read_bytes()
+    suffix = path.suffix.lower()
+    if suffix == ".svg":
+        return f"data:image/svg+xml;base64,{base64.b64encode(raw).decode('ascii')}", None
+    try:
+        from PIL import Image
+
+        image = Image.open(io.BytesIO(raw))
+        image.load()
+        has_alpha = image.mode in ("RGBA", "LA") or (image.mode == "P" and "transparency" in image.info)
+        if has_alpha:
+            rgba = image.convert("RGBA")
+            has_alpha = rgba.getchannel("A").getextrema()[0] < 255
+        image.thumbnail((320, 320))
+        out = io.BytesIO()
+        if has_alpha:
+            image.convert("RGBA").save(out, format="PNG")
+            return f"data:image/png;base64,{base64.b64encode(out.getvalue()).decode('ascii')}", None
+        rgb = image.convert("RGB")
+        width, height = rgb.size
+        corners = [rgb.getpixel(point) for point in ((0, 0), (width - 1, 0), (0, height - 1), (width - 1, height - 1))]
+        color = tuple(sum(channel) // len(corners) for channel in zip(*corners))
+        background = None if min(color) > 235 else "#%02x%02x%02x" % color  # nền gần trắng -> giữ khung trắng
+        rgb.save(out, format="JPEG", quality=90)
+        return f"data:image/jpeg;base64,{base64.b64encode(out.getvalue()).decode('ascii')}", background
+    except Exception:  # file ảnh lạ/hỏng: dùng nguyên bản, khung trắng
+        return f"data:{_MIME.get(suffix, 'image/png')};base64,{base64.b64encode(raw).decode('ascii')}", None
+
+
 def logo_html() -> str:
     path = _logo_path()
     if path is None:
         return '<span class="mp-logo-badge">MSB</span>'
-    data = base64.b64encode(path.read_bytes()).decode("ascii")
-    return f'<img class="mp-logo-img" alt="MSB" src="data:{_MIME[path.suffix.lower()]};base64,{data}">'
+    uri, background = _logo_data(str(path), path.stat().st_mtime)
+    if background:
+        return f'<img class="mp-logo-img solid" alt="MSB" style="background:{background}" src="{uri}">'
+    return f'<img class="mp-logo-img" alt="MSB" src="{uri}">'
 
 
 def apply_theme(page_title: str) -> None:
