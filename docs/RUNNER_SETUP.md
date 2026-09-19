@@ -611,3 +611,22 @@ python -B scripts/test_offline.py -x
 Bộ kiểm tra dùng dữ liệu giả, chặn mạng và việc mở file secret, không chạy
 PostgreSQL integration mặc định. Người vận hành tự chạy UAT và chỉ gửi số liệu/
 output đã che dữ liệu nhạy cảm để đối chiếu.
+
+## Chạy ở đâu? (quyết định thiết kế)
+
+Giữ thiết kế **agent cục bộ**: web UI/API (trên GreenNode hoặc local) chỉ là control plane; phần thao tác trình duyệt chạy trên
+máy người dùng.
+
+| Chức năng | Chạy ở đâu | Cần Python trên máy người dùng |
+|---|---|---|
+| Describe (AI viết workbook nháp), chuẩn hóa bản ghi bằng AI | Server (API) | Không |
+| Record (`record_runner.py`), Inspector (`inspect_runner.py`) | Máy người dùng (cần trình duyệt có giao diện) | Có |
+| Chạy testcase (`local_runner_agent.py`) | Máy người dùng | Có |
+
+Máy người dùng cần Python 3.12, `pip install -r requirements.txt -r requirements-auth.txt -r requirements-runner.txt` và
+`python -m playwright install chromium`. User/pass của **trang được test** chỉ nằm trong `runner.env` cục bộ (mẫu
+`runner.env.example`), không rời máy và bị `runner_agent/upload.py` chặn nếu lỡ đưa vào thư mục upload. Tài khoản đăng nhập
+vào Runner (khác loại) lưu trong Postgres, tạo bằng `scripts/create_runner_admin.py`.
+
+Cân nhắc tương lai (chưa làm): chạy testcase không giao diện trên server (cần chuyển `.env` từng lần chạy, chỉ giữ trong bộ nhớ,
+chỉ dùng được với trang công khai) hoặc đóng gói agent thành `.exe`/Docker để người dùng không cài Python.
