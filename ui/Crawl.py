@@ -8,6 +8,14 @@ frontend/backend (`API_BASE_URL` trong `.env`, mặc định http://localhost:80
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# `streamlit run` chỉ thêm thư mục của script vào sys.path; cần thư mục gốc để import `ui.*`, `src.*`.
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[1])
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import csv
 import io
 import os

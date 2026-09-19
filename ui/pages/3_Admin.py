@@ -14,6 +14,14 @@ và `src/api/admin.py`).
 """
 from __future__ import annotations
 
+import sys
+from pathlib import Path
+
+# `streamlit run` chỉ thêm thư mục của script vào sys.path; cần thư mục gốc để import `ui.*`, `src.*`.
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import os
 from typing import Any, Optional
 

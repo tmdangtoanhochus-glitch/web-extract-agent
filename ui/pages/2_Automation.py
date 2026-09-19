@@ -1,4 +1,12 @@
 """Runner UI: chỉ gọi HTTP; browser UAT và credential ở máy người dùng."""
+import sys
+from pathlib import Path
+
+# `streamlit run` chỉ thêm thư mục của script vào sys.path; cần thư mục gốc để import `ui.*`, `src.*`.
+_PROJECT_ROOT = str(Path(__file__).resolve().parents[2])
+if _PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, _PROJECT_ROOT)
+
 import base64
 from datetime import datetime, timezone
 import os
