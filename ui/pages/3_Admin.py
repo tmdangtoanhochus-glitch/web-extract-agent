@@ -3,7 +3,7 @@
 
 **KHÔNG dành cho người dùng cuối** — Streamlit tự thêm trang này vào sidebar
 multipage (do nằm trong `ui/pages/`), tách biệt hoàn toàn khỏi luồng chính
-(`ui/crawl.py`). Backend yêu cầu HTTP Basic Auth cho MỌI route `/admin/*`
+(`ui/Crawl.py`). Backend yêu cầu HTTP Basic Auth cho MỌI route `/admin/*`
 (`ADMIN_USERNAME`/`ADMIN_PASSWORD` trong `.env`, xem `src/api/admin.py`) —
 trang này tự xin username/password rồi gắn vào MỌI request gọi API.
 

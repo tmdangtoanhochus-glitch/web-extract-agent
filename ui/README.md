@@ -11,7 +11,7 @@ Chạy (cần backend đang chạy ở cổng 8000):
 
 ```bash
 uvicorn src.api.main:app --reload
-streamlit run ui/crawl.py
+streamlit run ui/Crawl.py
 ```
 
 Đổi địa chỉ backend bằng biến môi trường `API_BASE_URL` (mặc định `http://localhost:8000`).

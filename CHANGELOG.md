@@ -26,8 +26,8 @@
 - Skill AgentBase: `Dockerfile` gốc dùng cổng 8080; CI chạy test trước khi build/push image; xóa `scripts/create_admin_direct.py`
   (hardcode mật khẩu); chuẩn hóa LF + `.gitattributes`; gộp reset/quên mật khẩu Runner.
 - Đăng nhập admin chung: tài khoản admin Runner dùng cho cả `/admin/*` (Crawl) và `/runner/*` (Automation); `.env` Basic là dự phòng
-  (chỉ Crawl). Trang đổi tên: `ui/crawl.py` (Crawl), `pages/2_Automation.py`, `pages/3_Admin.py` (tab riêng "Crawl · …" và "Automation · …").
-  Entry Streamlit mới: `streamlit run ui/crawl.py`.
+  (chỉ Crawl). Trang đổi tên: `ui/Crawl.py` (Crawl), `pages/2_Automation.py`, `pages/3_Admin.py` (tab riêng "Crawl · …" và "Automation · …").
+  Entry Streamlit mới: `streamlit run ui/Crawl.py`.
 - Kiểm chứng thật: Runner trên Postgres 16 (ghi -> kết nối lại -> dữ liệu, đăng nhập, reset mật khẩu còn nguyên) và 35 test
   PostgresStorage đạt. So sánh engine trên finance.vietstock.vn/doanh-nghiep-a-z: httpx/hybrid chỉ lấy 3 dòng bảng, playwright lấy 310 —
   giữ `FETCH_ENGINE=playwright` mặc định; hybrid không phù hợp site JS nặng có HTML lớn.

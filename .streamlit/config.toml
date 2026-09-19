@@ -1,6 +1,6 @@
 # Cố định theme SÁNG cho toàn bộ UI, không phụ thuộc chế độ sáng/tối của
 # trình duyệt/hệ điều hành người dùng — tránh lặp lại lỗi chữ trắng trên nền
-# trắng khi máy người dùng đang ở dark mode (CSS trong ui/crawl.py giả định nền
+# trắng khi máy người dùng đang ở dark mode (CSS trong ui/Crawl.py giả định nền
 # sáng #FBF6F3 + chữ tối, xem biến --msb-* trong đó).
 [theme]
 base = "light"

@@ -99,7 +99,7 @@ cp .env.example .env
 
 python -m pytest tests/ -v          # chạy test bằng mock, không cần credentials
 uvicorn src.api.main:app --reload    # chạy backend
-streamlit run ui/crawl.py              # chạy giao diện (terminal khác)
+streamlit run ui/Crawl.py              # chạy giao diện (terminal khác)
 ```
 
 > `requirements.txt` dùng version CỐ ĐỊNH (`==`, sinh bằng `pip freeze` từ venv sạch),
