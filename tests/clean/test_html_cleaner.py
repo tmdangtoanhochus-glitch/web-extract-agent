@@ -129,3 +129,29 @@ def test_empty_html_does_not_crash():
 
     assert doc.markdown == ""
     assert doc.title is None
+
+
+def test_images_are_kept_as_markdown_with_absolute_url_in_document_order():
+    html = (
+        '<html><body><div class="card"><img src="/img/a.jpg" alt="Nhà [A]"><h2>Nhà A</h2>'
+        '<img src="data:image/gif;base64,R0lG" data-src="https://cdn.x.com/lazy.jpg" alt="Lazy">'
+        '<img src="/px.gif" width="1" height="1">'
+        '<img src="data:image/gif;base64,R0lG">'
+        '<img srcset="/s-small.jpg 320w, /s-large.jpg 1024w" alt="Srcset"></div></body></html>'
+    )
+
+    md = clean_html(html, base_url="https://example.com/list/page").markdown
+
+    assert "![Nhà A](https://example.com/img/a.jpg)" in md
+    assert md.index("![Nhà A]") < md.index("## Nhà A")
+    assert "![Lazy](https://cdn.x.com/lazy.jpg)" in md
+    assert "![Srcset](https://example.com/s-large.jpg)" in md
+    assert "px.gif" not in md and "base64" not in md
+
+
+def test_image_inside_table_cell_and_without_base_url():
+    html = '<table><tr><th>Ảnh</th><th>Tên</th></tr><tr><td><img src="https://x.com/1.png" alt="Một"></td><td>Nhà 1</td></tr></table>'
+
+    md = clean_html(html).markdown
+
+    assert "![Một](https://x.com/1.png)" in md and "Nhà 1" in md

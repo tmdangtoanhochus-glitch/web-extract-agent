@@ -31,6 +31,7 @@ class Settings:
     admin_password: str
     runner_enabled: bool = False
     runner_ai_enabled: bool = False
+    runner_ai_model: str = ""  # trống = dùng chung ai_model
     runner_db_path: str = "./data/runner.db"
     runner_database_url: str = ""
     runner_data_root: str = "./data/runner"
@@ -75,6 +76,7 @@ def load_settings() -> Settings:
         admin_password=os.environ.get("ADMIN_PASSWORD", ""),
         runner_enabled=_parse_bool(os.environ.get("RUNNER_ENABLED", "false")),
         runner_ai_enabled=_parse_bool(os.environ.get("RUNNER_AI_ENABLED", "false")),
+        runner_ai_model=os.environ.get("RUNNER_AI_MODEL", ""),
         runner_db_path=os.environ.get("RUNNER_DB_PATH", "./data/runner.db"),
         runner_database_url=os.environ.get("RUNNER_DATABASE_URL", ""),
         runner_data_root=os.environ.get("RUNNER_DATA_ROOT", "./data/runner"),

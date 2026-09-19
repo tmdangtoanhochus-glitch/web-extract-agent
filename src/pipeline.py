@@ -94,7 +94,7 @@ def fetch_and_clean(url: str, fetcher: FetchEngine) -> FetchAndClean:
         "[%s] Fetch thành công (status=%s, %d bytes HTML) — đang làm sạch...",
         url, fetch_result.status_code, len(fetch_result.html),
     )
-    cleaned = clean_html(fetch_result.html)
+    cleaned = clean_html(fetch_result.html, base_url=fetch_result.final_url or url)
     content_hash = hashlib.sha256(cleaned.markdown.encode("utf-8")).hexdigest()
     logger.info(
         "[%s] Làm sạch xong — markdown còn %d ký tự (từ %d ký tự HTML gốc).",

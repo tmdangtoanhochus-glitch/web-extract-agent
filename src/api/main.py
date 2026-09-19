@@ -665,11 +665,13 @@ def _build_default_app() -> FastAPI:
                                            postgres_dsn=settings.runner_database_url or None),
                                  settings.runner_data_root)
         if settings.runner_ai_enabled:
-            if not all((settings.ai_base_url, settings.ai_api_key, settings.ai_model)):
+            # RUNNER_AI_MODEL cho phép Runner dùng model riêng; trống = dùng chung AI_MODEL.
+            runner_model = settings.runner_ai_model or settings.ai_model
+            if not all((settings.ai_base_url, settings.ai_api_key, runner_model)):
                 raise ValueError("Runner Describe requires AI configuration")
             from ..runner.planner import StepPlanner
             runner_planner = StepPlanner(settings.ai_base_url, settings.ai_api_key,
-                                         settings.ai_model, settings.ai_timeout_seconds)
+                                         runner_model, settings.ai_timeout_seconds)
     return create_app(
         fetcher=fetcher,
         ai_client=ai_client,

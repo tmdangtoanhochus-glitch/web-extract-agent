@@ -76,3 +76,13 @@ def test_ai_debug_timeout_defaults_to_30_when_nothing_set(monkeypatch):
     settings = load_settings()
 
     assert settings.ai_debug_timeout_seconds == 30.0
+
+
+def test_runner_ai_model_is_optional_and_independent_of_ai_model(monkeypatch):
+    monkeypatch.setenv("AI_MODEL", "qwen-flash")
+    monkeypatch.delenv("RUNNER_AI_MODEL", raising=False)
+    assert load_settings().runner_ai_model == ""  # trống = dùng chung AI_MODEL (xem src/api/main.py)
+
+    monkeypatch.setenv("RUNNER_AI_MODEL", "glm-x")
+    settings = load_settings()
+    assert settings.runner_ai_model == "glm-x" and settings.ai_model == "qwen-flash"

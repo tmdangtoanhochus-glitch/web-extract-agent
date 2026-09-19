@@ -1,5 +1,11 @@
 # Changelog
 
+## Giữ URL ảnh khi làm sạch + RUNNER_AI_MODEL — 2026-09-19
+- `clean_html(html, base_url)` chuyển mỗi `<img>` thành `![alt](url tuyệt đối)` đúng vị trí trong trang (ưu tiên `data-src`/lazy-load,
+  rồi `srcset`, rồi `src`; bỏ ảnh `data:`/`blob:` và pixel 1-2px). Trước đây `<img>` bị bỏ hết nên field ảnh (`image_fields`) luôn rỗng.
+  Vẫn là xử lý HTML thuần, không OCR. Lưu ý: URL ảnh nay nằm trong markdown nên `content_hash` đổi khi URL ảnh đổi (vd. CDN token).
+- `RUNNER_AI_MODEL` (tùy chọn): model riêng cho Runner Describe; trống = dùng chung `AI_MODEL`.
+
 ## Tuân thủ skill GreenNode AgentBase + phản hồi người dùng — 2026-09-19
 
 - **robots.txt luôn được kiểm tra** với mọi engine: `PlaywrightFetcher` mặc định `HttpRobotsChecker`

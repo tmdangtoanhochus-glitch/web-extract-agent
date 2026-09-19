@@ -9,6 +9,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from typing import Optional
+from urllib.parse import urljoin
 
 from bs4 import BeautifulSoup
 from bs4.element import Tag
@@ -31,6 +32,10 @@ _TAGS_TO_STRIP = (
     "template",
 )
 
+# Thuộc tính chứa URL ảnh THẬT của ảnh lazy-load (src thường chỉ là ảnh giữ chỗ).
+_LAZY_IMAGE_ATTRS = ("data-src", "data-original", "data-lazy-src", "data-lazy", "data-url")
+_IGNORED_IMAGE_SCHEMES = ("data:", "blob:", "javascript:")
+
 _RENDERABLE_TAGS = ("h1", "h2", "h3", "h4", "h5", "h6", "p", "ul", "ol", "table", "div", "span")
 
 
@@ -44,7 +49,8 @@ class CleanedDocument:
     cleaned_length: int
 
 
-def clean_html(html: str) -> CleanedDocument:
+def clean_html(html: str, base_url: Optional[str] = None) -> CleanedDocument:
+    """`base_url` (URL trang) dùng để đổi URL ảnh tương đối thành tuyệt đối."""
     soup = BeautifulSoup(html, "html.parser")
 
     title = None
@@ -55,6 +61,8 @@ def clean_html(html: str) -> CleanedDocument:
         for tag in soup.find_all(tag_name):
             tag.decompose()
 
+    _inline_images(soup, base_url)
+
     body = soup.body or soup
     markdown = _render_markdown(body)
 
@@ -64,6 +72,42 @@ def clean_html(html: str) -> CleanedDocument:
         original_length=len(html),
         cleaned_length=len(markdown),
     )
+
+
+def _image_url(img: Tag, base_url: Optional[str]) -> Optional[str]:
+    """URL ảnh thật: ưu tiên thuộc tính lazy-load, rồi srcset (bản cuối, thường lớn
+    nhất), cuối cùng mới là `src`. Bỏ ảnh data:/blob: và pixel theo dõi 1-2px."""
+    for dimension in ("width", "height"):
+        value = str(img.get(dimension) or "").strip()
+        if value.isdigit() and int(value) <= 2:
+            return None
+    candidates = [img.get(attr) for attr in _LAZY_IMAGE_ATTRS]
+    srcset = img.get("data-srcset") or img.get("srcset")
+    if srcset:
+        last = srcset.split(",")[-1].strip().split()
+        candidates.append(last[0] if last else None)
+    candidates.append(img.get("src"))
+    for candidate in candidates:
+        candidate = (candidate or "").strip()
+        if not candidate or candidate.lower().startswith(_IGNORED_IMAGE_SCHEMES):
+            continue
+        return urljoin(base_url, candidate) if base_url else candidate
+    return None
+
+
+def _inline_images(soup: BeautifulSoup, base_url: Optional[str]) -> None:
+    """Thay mỗi <img> bằng 1 đoạn `![alt](url)` đúng vị trí trong tài liệu để AI thấy
+    URL ảnh thuộc bản ghi nào (trước đây <img> bị bỏ hết, field ảnh luôn rỗng). Đây vẫn
+    là xử lý HTML thuần — không OCR, không gửi ảnh cho AI."""
+    for img in soup.find_all("img"):
+        url = _image_url(img, base_url)
+        if url is None:
+            img.decompose()
+            continue
+        alt = re.sub(r"[\[\]]", "", _clean_text(str(img.get("alt") or "")))
+        holder = soup.new_tag("p")
+        holder.string = f"![{alt}]({url})"
+        img.replace_with(holder)
 
 
 def _render_markdown(root: Tag) -> str:
