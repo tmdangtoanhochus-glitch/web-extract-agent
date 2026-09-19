@@ -10,6 +10,7 @@ dùng (máy bạn phải kết nối mạng tới được server đó). Xem
 docs/RUNNER_SETUP.md mục "Tạo admin khi deploy (Postgres)" để biết chi tiết."""
 import argparse
 import getpass
+import re
 import sys
 from pathlib import Path
 
@@ -35,7 +36,8 @@ if __name__ == "__main__":
     repo = Repository(args.db, postgres_dsn=args.postgres_dsn)
     try:
         Service(repo, args.root).add_user(args.username, password, "admin", bootstrap=True)
-        target = args.postgres_dsn or args.db
+        # Che mật khẩu trong DSN trước khi in ra terminal/log.
+        target = re.sub(r"(://[^:/@]+:)[^@]*@", r"********@", args.postgres_dsn) if args.postgres_dsn else args.db
         print(f"Đã tạo admin Runner trên {target}")
     finally:
         repo.close()
