@@ -32,3 +32,4 @@ config
 
 .greennode.json
 .agentbase
+.agentbase/

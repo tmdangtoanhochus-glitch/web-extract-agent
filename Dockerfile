@@ -1,8 +1,14 @@
+# Dockerfile gốc theo yêu cầu của skill agentbase-deploy (cần có ở thư mục gốc).
+# Giống hệt Dockerfile.api — khi sửa API image, sửa cả hai (test_dockerfiles kiểm tra).
+# Image RIÊNG cho Agent Runtime "API" trên GreenNode AgentBase — chỉ chạy
+# FastAPI backend, KHÔNG chạy Streamlit (xem README mục "Deploy lên GreenNode").
 FROM python:3.12-slim
 
 WORKDIR /app
 
-# Cài dependency hệ thống cần cho Playwright (Chromium)
+# Cài dependency hệ thống cần cho Playwright (Chromium) — giữ lại dù API
+# chưa dùng PlaywrightFetcher làm mặc định, để không phá vỡ khả năng bật
+# fetch site JS-heavy sau này mà không phải sửa lại image.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     wget gnupg ca-certificates \
     && rm -rf /var/lib/apt/lists/*
@@ -11,12 +17,16 @@ COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY requirements-auth.txt .
 RUN pip install --no-cache-dir -r requirements-auth.txt
+COPY requirements-runner.txt .
+RUN pip install --no-cache-dir -r requirements-runner.txt
 
-# Cài trình duyệt Playwright + dependency hệ thống đi kèm
 RUN playwright install --with-deps chromium
 
 COPY . .
 
+# GreenNode AgentBase yêu cầu container lắng nghe cổng 8080 — đọc từ biến
+# môi trường PORT (mặc định 8080) để vẫn đổi được cổng khi dev/test local.
+ENV PORT=8080
 EXPOSE 8080
 
-CMD ["uvicorn", "src.api.main:app", "--host", "0.0.0.0", "--port", "8080"]
+CMD ["sh", "-c", "uvicorn src.api.main:app --host 0.0.0.0 --port ${PORT:-8080}"]
