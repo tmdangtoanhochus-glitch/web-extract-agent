@@ -24,13 +24,11 @@ def test_cookie_and_report_after_rendering_error(monkeypatch):
     app.session_state["urls"] = ["https://example.test/table?query=synthetic"]
     app.session_state["fields"] = [{"name": "price", "desc": "Price"}]
     app.session_state["dataset_name"] = "History"
-    app.session_state["cookie_origin"] = "https://example.test"
-    app.session_state["cookie_value"] = "session=synthetic-cookie"
     app.run()
     assert not app.exception
+    next(w for w in app.text_input if w.label == "Cookie cho lượt kéo").set_value("session=synthetic-cookie")
     next(w for w in app.button if w.label == "🚀 Chạy crawl").click().run()
     assert not app.exception
-    assert app.session_state["cookie_value"] == ""  # cookie tự xóa ngay khi chạy
     assert app.session_state["crawl_ui_error"]["error_type"] == "TypeError"
     next(w for w in app.button if w.label == "Gửi báo lỗi").click().run()
     payload = next(body for path, body in calls if path == "/crawl-reports")
@@ -208,13 +206,11 @@ def test_background_submission_and_pause_resume_controls(monkeypatch):
     app.session_state["urls"] = ["https://example.test/?page={page}"]
     app.session_state["fields"] = [{"name": "id", "desc": "Identifier"}]
     app.session_state["dataset_name"] = "History"
-    app.session_state["cookie_origin"] = "https://example.test"
-    app.session_state["cookie_value"] = "session=synthetic-cookie"
     app.run()
     next(w for w in app.checkbox if w.label == "Kéo nhiều lượt / kéo bảng").check().run()
+    next(w for w in app.text_input if w.label == "Cookie cho lượt kéo").set_value("session=synthetic-cookie")
     next(w for w in app.button if w.label == "🚀 Chạy crawl").click().run()
     assert not app.exception
-    assert app.session_state["cookie_value"] == ""
     assert calls[0][0] == "/crawl-jobs"
     assert calls[0][1]["requests"][0]["cookie_header"] == "session=synthetic-cookie"
     assert "cookie_header" not in app.session_state["active_crawl_job"]["configs"][0]
@@ -250,32 +246,3 @@ def test_schedule_pause_and_timing_edit_do_not_change_crawl_config(monkeypatch):
     assert not app.exception and job["trigger_args"]["hours"] == 6 and job["enabled"] is False
     assert all(set(body) <= {"enabled", "trigger_type", "trigger_args"} for _, body in calls)
     assert job["dataset_id"] == "d1" and job["url"] == "https://example.test/"
-
-
-def test_cookie_section_is_on_step1_with_instructions_and_can_be_cleared():
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["step"] = 1
-    app.session_state["urls"] = ["https://example.test/page"]
-    app.run()
-    assert not app.exception
-    assert any("Cách lấy cookie" in e.label for e in app.expander)
-    assert any("Network" in str(m.value) for m in app.markdown)  # có hướng dẫn F12 -> Network
-    next(w for w in app.text_input if w.label == "Cookie").set_value("session=abc").run()
-    assert app.session_state["cookie_value"] == "session=abc"
-    assert app.session_state["cookie_origin"] == "https://example.test"
-    next(w for w in app.button if w.label == "Xóa cookie đã dán").click().run()
-    assert app.session_state["cookie_value"] == ""
-
-
-def test_preview_keeps_cookie_but_real_run_clears_it():
-    """Xem trước không xóa cookie (để còn chạy thật); chỉ 'Chạy crawl' mới xóa."""
-    app = AppTest.from_file(str(PAGE), default_timeout=30)
-    app.session_state["step"] = 3
-    app.session_state["urls"] = ["https://example.test/page"]
-    app.session_state["fields"] = [{"name": "price", "desc": "Price"}]
-    app.session_state["dataset_name"] = "History"
-    app.session_state["cookie_origin"] = "https://example.test"
-    app.session_state["cookie_value"] = "session=abc"
-    app.run()
-    assert not app.exception
-    assert any("cookie đã dán ở Bước 1" in str(c.value) for c in app.caption)

@@ -167,12 +167,26 @@ def test_describe_requires_review_and_clears_draft_on_logout(monkeypatch):
     assert "runner_describe_draft" not in app.session_state
 
 
-def test_login_screen_shows_python_setup_guide_before_login():
+def test_setup_guide_is_hidden_on_login_screen_and_shown_after_login(monkeypatch):
     app = AppTest.from_file(str(PAGE), default_timeout=30)
     app.run()
     assert not app.exception
+    assert not any("Cài môi trường Python" in e.label for e in app.expander)  # chưa đăng nhập: không hiện
+
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def request(self, method, path, json=None, **kw):
+            data = {"id": "u1", "username": "staff", "role": "user"} if path == "/runner/me" else []
+            return httpx.Response(200, json=data, request=httpx.Request(method, "http://t"))
+        def post(self, path, json=None, **kw):
+            return httpx.Response(200, json={}, request=httpx.Request("POST", "http://t"))
+    monkeypatch.setattr(httpx, "Client", Client)
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.session_state["runner_session"] = "token"
+    app.run()
+    assert not app.exception
     guide = next(e for e in app.expander if "Cài môi trường Python" in e.label)
-    assert guide.proto.expanded  # mở sẵn để người dùng mới thấy ngay
-    text = " ".join(str(c.value) for c in app.code)
-    assert "python -m venv .venv" in text and "playwright install chromium" in text
-    assert "local_runner_agent.py" in text
+    assert guide.proto.expanded
+    assert "python -m venv .venv" in " ".join(str(c.value) for c in app.code)

@@ -22,13 +22,13 @@ import os
 from html import escape
 from urllib.parse import urlsplit, urlunsplit
 try:
-    from ui.crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls, cookie_section
+    from ui.crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls
     from ui.crawl_jobs import submit_background, render_background
     from ui.schedule_controls import schedule_controls
 except ModuleNotFoundError as exc:
     if exc.name != "ui":
         raise
-    from crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls, cookie_section
+    from crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls
     from crawl_jobs import submit_background, render_background
     from schedule_controls import schedule_controls
 try:
@@ -41,57 +41,11 @@ from typing import Any, Optional
 
 import httpx
 import streamlit as st
+from ui.theme import apply_theme, hero
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
-st.set_page_config(page_title="Web Data Puller", page_icon="🧡", layout="wide")
-
-_CSS = """
-<style>
-:root {
-  --msb-orange:#FF671F; --msb-red:#ED1C24; --msb-sun:#FFB81C;
-  --msb-border:#F0E2DA; --msb-green:#1BA672; --msb-blue:#2E6FE7;
-}
-.stApp { background:#FBF6F3; }
-.mp-hero {
-  background:linear-gradient(120deg,var(--msb-red) 0%, var(--msb-orange) 60%, var(--msb-sun) 100%);
-  color:#fff; padding:20px 26px; border-radius:16px; margin-bottom:18px;
-}
-.mp-hero h1 { margin:0 0 4px 0; font-size:22px; }
-.mp-hero p { margin:0; opacity:.92; font-size:13.5px; }
-.mp-pill {
-  display:inline-flex; align-items:center; gap:6px; background:#FFF1E8; color:var(--msb-red);
-  padding:5px 12px; border-radius:20px; font-size:12.5px; font-weight:600; margin:3px 4px 3px 0;
-}
-.mp-card {
-  background:#fff; border:1px solid var(--msb-border); border-radius:14px;
-  padding:18px 20px; margin-bottom:14px;
-}
-.mp-section-label {
-  font-size:14px; font-weight:600; color:#333; margin:12px 0 6px 0;
-  padding-bottom:4px; border-bottom:2px solid var(--msb-border);
-}
-.mp-hint {
-  background:#F0F7FF; border-left:3px solid var(--msb-blue); padding:8px 12px;
-  border-radius:0 6px 6px 0; font-size:13px; color:#444; margin:8px 0;
-}
-div.stButton > button[kind="primary"] {
-  background:linear-gradient(135deg,var(--msb-red),var(--msb-orange)); border:none;
-}
-div.stButton > button[kind="secondary"]:hover {
-  border-color:var(--msb-orange); color:var(--msb-orange);
-}
-.mp-status-saved { color:var(--msb-green); font-weight:700; }
-.mp-status-unchanged { color:#8a8380; font-weight:700; }
-.mp-status-warn { color:var(--msb-sun); font-weight:700; }
-.mp-status-error { color:var(--msb-red); font-weight:700; }
-.mp-step-active {
-  background:linear-gradient(135deg,var(--msb-red),var(--msb-orange)) !important;
-  color:#fff !important;
-}
-</style>
-"""
-st.markdown(_CSS, unsafe_allow_html=True)
+apply_theme("Web Data Puller")
 
 
 _WRITE_MODE_LABELS = {
@@ -210,15 +164,9 @@ def _list_datasets() -> list[dict]:
     return _api_get("/datasets") or []
 
 
-st.markdown(
-    """
-    <div class="mp-hero">
-      <h1>🧡 Web Data Puller</h1>
-      <p>Nhập link website + mô tả field cần lấy bằng ngôn ngữ tự nhiên — hệ thống tự crawl,
-      AI trích xuất, lưu vào database. Không cần viết code.</p>
-    </div>
-    """,
-    unsafe_allow_html=True,
+hero(
+    "Web Data Puller",
+    "Nhập link website + mô tả field cần lấy bằng ngôn ngữ tự nhiên — hệ thống tự crawl, AI trích xuất, lưu vào database. Không cần viết code.",
 )
 
 STEP_LABELS = [
@@ -295,8 +243,6 @@ def _render_step1() -> None:
     if st.button("+ Thêm link") and new_url.strip():
         if new_url.strip() not in st.session_state.urls:
             st.session_state.urls.append(new_url.strip())
-
-    cookie_section(st.session_state.urls)
 
     with st.expander("Phân trang — cào nhiều page liên tiếp", expanded=False):
         st.caption("Dùng `{page}` làm số trang trong URL. VD: `https://books.toscrape.com/catalogue/page-{page}.html`")
@@ -492,11 +438,6 @@ def _render_step3() -> None:
     busy = bool(active_job and not active_job.get("handled"))
     submitted, cookie_origin, request_cookie, preview = run_controls(st.session_state.urls, bool(crawl_options), busy)
     if submitted or preview:
-        if submitted:
-            # Cookie đã được lấy vào biến cục bộ `request_cookie` ở trên: xóa khỏi bộ nhớ phiên NGAY khi bắt đầu chạy.
-            # (Xem trước không xóa để người dùng còn chạy thật.)
-            st.session_state.cookie_value = ""
-            st.session_state.cookie_origin = None
         st.session_state.crawl_ui_error = None
         st.session_state.crawl_previews = []
         if submitted:

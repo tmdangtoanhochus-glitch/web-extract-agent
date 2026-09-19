@@ -1,13 +1,13 @@
 # Changelog
 
-## Cookie ở Bước 1 + hướng dẫn cài Python trên trang Automation — 2026-09-19
-- **Cookie:** ô dán cookie chuyển ra Bước 1 (Nguồn dữ liệu), kèm hướng dẫn F12 → Network → Request Headers → Cookie. Cookie chỉ nằm trong bộ nhớ
-  phiên: không ghi DB/file, không dùng cho lịch tự động, tự xóa ngay khi bấm "Chạy crawl" (xem trước không xóa) hoặc khi bấm "Xóa cookie đã dán".
-- **Automation:** hướng dẫn cài Python đầy đủ (8 bước, lỗi thường gặp, lệnh agent điền sẵn địa chỉ API) hiển thị ngay trên trang, mở sẵn ở màn đăng nhập
-  (`ui/runner_setup_guide.py`); trước đây chỉ có khung thu gọn sau khi đăng nhập.
+## Giao diện dùng chung + hướng dẫn cài Python sau đăng nhập — 2026-09-19
+- **Giao diện:** `ui/theme.py` dùng chung cho Crawl, Automation và Admin (banner, thẻ/tab/nút/khung mở rộng nổi khối, bóng đổ). Tab active có gradient.
+  Trái tim 🧡 thay bằng huy hiệu **MSB**; đặt file `ui/assets/msb_logo.png` (.svg/.jpg/.webp) để dùng logo thật ở banner và biểu tượng tab.
+- **Automation:** hướng dẫn cài Python (8 bước, lỗi thường gặp, lệnh agent điền sẵn địa chỉ API) hiện **sau khi đăng nhập**, mở sẵn ở lần đầu của phiên,
+  thu gọn các lần sau (`ui/runner_setup_guide.py`).
+- **Cookie:** giữ nguyên thiết kế của Kiên (dán ở Bước 3, không lưu, xóa sau mỗi lần gửi).
 - **Sửa lỗi deploy:** trang Automation trên bản deploy báo `No module named 'ui'` vì `streamlit run ui/Crawl.py` chỉ thêm `ui/` vào `sys.path`;
   thêm `ENV PYTHONPATH=/app` trong `Dockerfile.ui`, các trang tự thêm thư mục gốc, và test chặn tái diễn.
-- Test: 600 pass.
 
 ## Giữ URL ảnh khi làm sạch + RUNNER_AI_MODEL — 2026-09-19
 - `clean_html(html, base_url)` chuyển mỗi `<img>` thành `![alt](url tuyệt đối)` đúng vị trí trong trang (ưu tiên `data-src`/lazy-load,

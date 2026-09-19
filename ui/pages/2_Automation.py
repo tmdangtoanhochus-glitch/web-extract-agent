@@ -13,10 +13,11 @@ import os
 
 import httpx
 import streamlit as st
+from ui.theme import apply_theme, hero
 
 API = os.environ.get("API_BASE_URL", "http://localhost:8000").rstrip("/")
-st.set_page_config(page_title="Local Runner", page_icon="▶", layout="wide")
-st.title("Local Runner")
+apply_theme("Automation")
+hero("Automation", "Mô tả flow, ghi thao tác và chạy testcase — thao tác trình duyệt chạy trên máy của bạn, kết quả lưu ngay tại máy.")
 st.caption("Đăng nhập chỉ dành cho Runner. Chức năng crawl ở trang chính dùng được không cần đăng nhập Runner.")
 
 
@@ -85,8 +86,6 @@ with st.sidebar:
 
 
 if "runner_session" not in st.session_state:
-    # Người dùng mới cần biết phải cài gì TRƯỚC khi đăng nhập -> mở sẵn.
-    render_setup_guide(expanded=True)
     with st.form("runner_login", clear_on_submit=True):
         username = st.text_input("Username")
         password = st.text_input("Password", type="password")
@@ -111,7 +110,9 @@ if "runner_session" not in st.session_state:
                 st.success(result["detail"])
     st.stop()
 
-render_setup_guide(expanded=False)
+# Hiện sau khi đăng nhập: mở sẵn ở lần đầu của phiên, các lần sau thu gọn (vẫn nằm ngay đầu trang).
+render_setup_guide(expanded=not st.session_state.get("runner_guide_seen", False))
+st.session_state.runner_guide_seen = True
 
 me = api("GET", "/me")
 if not me:

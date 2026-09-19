@@ -27,17 +27,18 @@ from typing import Any, Optional
 
 import httpx
 import streamlit as st
+from ui.theme import apply_theme, hero
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
-st.set_page_config(page_title="Admin", page_icon="🛠️", layout="wide")
+apply_theme("Admin")
+hero("Admin", "Quản lý Crawl và Automation: job lỗi, báo lỗi, phản hồi người dùng, tài khoản Runner.")
 
 st.warning(
     "🛠️ **Màn nội bộ (admin/dev)** — không dành cho người dùng thường. "
     "AI ở đây chỉ ĐỌC traceback/code và GỢI Ý sửa lỗi dạng text — không tự động sửa file, "
     "không thực thi lệnh gì. Bạn tự đọc/copy và áp dụng thủ công bên ngoài (git/editor riêng)."
 )
-st.title("🛠️ Admin — quản lý Crawl & Automation")
 
 # ---- Đăng nhập admin CHUNG cho Crawl + Automation ---------------------------
 # Tài khoản admin của Runner (role=admin) dùng được cho cả /admin/* (crawl) lẫn
