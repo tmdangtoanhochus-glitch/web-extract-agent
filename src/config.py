@@ -3,9 +3,11 @@ trong code, chỉ định nghĩa key + default an toàn cho dev."""
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from dotenv import load_dotenv
+
+from .ai.rate_limiter import parse_model_limits
 
 
 @dataclass(frozen=True)
@@ -35,6 +37,9 @@ class Settings:
     runner_db_path: str = "./data/runner.db"
     runner_database_url: str = ""
     runner_data_root: str = "./data/runner"
+    # Hạn mức request/phút theo từng model, vd. "qwen/qwen3.6-flash=2,z-ai/glm-5.3-flash-thirdparty=5" —
+    # xem `src/ai/rate_limiter.py`. Header của API (nếu có) ghi đè số này.
+    ai_model_limits: dict = field(default_factory=dict)
 
 
 def load_settings() -> Settings:
@@ -80,6 +85,7 @@ def load_settings() -> Settings:
         runner_db_path=os.environ.get("RUNNER_DB_PATH", "./data/runner.db"),
         runner_database_url=os.environ.get("RUNNER_DATABASE_URL", ""),
         runner_data_root=os.environ.get("RUNNER_DATA_ROOT", "./data/runner"),
+        ai_model_limits=parse_model_limits(os.environ.get("AI_MODEL_LIMITS", "")),
     )
 
 

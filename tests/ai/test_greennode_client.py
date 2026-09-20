@@ -505,3 +505,174 @@ def test_extract_defaults_to_sequential_when_parallel_not_given():
     result = client.extract("nội dung ngắn", {"price": "giá"})
 
     assert result.success is True
+
+
+# ---------------------------------------------------------------- hạn mức (rate limit), 429, tiến độ
+from src.ai.rate_limiter import ModelRateLimiter  # noqa: E402
+
+
+class _FakeClock:
+    def __init__(self):
+        self.now = 0.0
+        self.slept = 0.0
+
+    def __call__(self):
+        return self.now
+
+    def sleep(self, seconds):
+        self.now += seconds
+        self.slept += seconds
+
+
+def _ok(value="r"):
+    return httpx.Response(200, json=_openai_response(json.dumps([{"a": {"value": value, "confidence": 0.9, "evidence": "e"}}])))
+
+
+def _limited_client(handler, limits=None, **kw):
+    clock = _FakeClock()
+    limiter = ModelRateLimiter(limits or {}, clock=clock, sleep=clock.sleep)
+    return _make_client(handler, rate_limiter=limiter, **kw), limiter, clock
+
+
+def test_429_waits_for_retry_after_then_retries_and_succeeds_without_counting_as_a_failed_chunk():
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        if len(calls) == 1:
+            return httpx.Response(429, headers={"retry-after": "21"}, json={"message": "API rate limit exceeded"})
+        return _ok()
+
+    client, _, clock = _limited_client(handler)
+    result = client.extract("nội dung", {"a": "mô tả"})
+
+    assert result.success is True and result.warning is None
+    assert len(calls) == 2
+    assert clock.slept >= 21  # đã CHỜ đúng Retry-After, không thử lại tức thì
+
+
+def test_429_that_never_clears_gives_up_after_a_few_waits_with_a_clear_error():
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return httpx.Response(429, headers={"retry-after": "5"}, json={"message": "API rate limit exceeded"})
+
+    client, _, _ = _limited_client(handler)
+    result = client.extract("nội dung", {"a": "mô tả"})
+
+    assert result.success is False and "rate_limited" in result.error
+    assert len(calls) == 5  # 1 lần đầu + 4 lần chờ rồi thử lại
+
+
+def test_429_does_not_use_up_the_normal_single_retry_for_other_errors():
+    """Chuỗi 429 -> 500 -> 200: lỗi 500 vẫn được thử lại 1 lần bình thường sau khi đã chờ 429."""
+    statuses = iter([429, 500, 200])
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        status = next(statuses)
+        if status == 429:
+            return httpx.Response(429, headers={"retry-after": "1"})
+        if status == 500:
+            return httpx.Response(500, text="lỗi")
+        return _ok()
+
+    client, _, _ = _limited_client(handler)
+    result = client.extract("nội dung", {"a": "mô tả"})
+
+    assert result.success is True and len(calls) == 3
+
+
+def test_configured_limit_delays_calls_instead_of_sending_and_getting_429():
+    """Hạn mức 1 request/phút: 3 đoạn tuần tự phải tự CHỜ ~61s giữa các lượt, và server không bao giờ thấy 429."""
+    calls = []
+
+    def handler(request):
+        calls.append(1)
+        return _ok()
+
+    client, _, clock = _limited_client(handler, limits={"openai/gpt-4o": 1})
+    result = client.extract(_long_markdown(), {"a": "mô tả"})
+    chunks, _ = _split_markdown(_long_markdown())
+
+    assert result.success is True and len(calls) == len(chunks) >= 3
+    assert clock.slept >= 61 * (len(chunks) - 1) - 1
+
+
+def test_ratelimit_header_from_api_becomes_the_limit():
+    def handler(request):
+        response = _ok()
+        response.headers["x-ratelimit-limit-minute"] = "7"
+        return response
+
+    client, limiter, _ = _limited_client(handler, limits={"openai/gpt-4o": 2})
+    client.extract("nội dung", {"a": "mô tả"})
+
+    assert limiter.limit_for("openai/gpt-4o") == 7  # header là chuẩn, ghi đè cấu hình
+
+
+def test_progress_events_report_chunks_done_over_total_for_sequential_mode():
+    events = []
+
+    def handler(request):
+        return _ok()
+
+    client, _, _ = _limited_client(handler)
+    markdown = _long_markdown()
+    chunks, _ = _split_markdown(markdown)
+    result = client.extract(markdown, {"a": "mô tả"}, on_progress=events.append)
+
+    assert result.success is True
+    assert events[0]["ai_chunks_total"] == len(chunks) and events[0]["ai_chunks_done"] == 0
+    assert events[-1]["ai_chunks_done"] == len(chunks) and events[-1]["ai_calling"] == 0
+    dones = [e["ai_chunks_done"] for e in events]
+    assert dones == sorted(dones)  # chỉ tăng, từng đoạn một
+    assert any(e["ai_calling"] >= 1 for e in events)  # có lúc báo "model đang xử lý"
+
+
+def test_progress_events_show_waiting_for_rate_limit_with_a_countdown():
+    events = []
+    client, _, _ = _limited_client(lambda request: _ok(), limits={"openai/gpt-4o": 1})
+    client.extract(_long_markdown(), {"a": "mô tả"}, on_progress=events.append)
+
+    waiting = [e for e in events if e["ai_waiting"] >= 1]
+    assert waiting and all(e["ai_wait_seconds"] > 0 for e in waiting)  # UI hiện được "chờ hạn mức, còn ~Ns"
+
+
+def test_single_short_page_still_reports_one_chunk_progress():
+    events = []
+    client, _, _ = _limited_client(lambda request: _ok())
+    client.extract("nội dung ngắn", {"a": "mô tả"}, on_progress=events.append)
+
+    assert events[0]["ai_chunks_total"] == 1 and events[-1]["ai_chunks_done"] == 1
+
+
+def test_a_broken_progress_callback_never_breaks_extraction():
+    def boom(_):
+        raise RuntimeError("UI hỏng")
+
+    client, _, _ = _limited_client(lambda request: _ok())
+    assert client.extract("nội dung", {"a": "mô tả"}, on_progress=boom).success is True
+
+
+def test_parallel_mode_respects_the_limit_instead_of_firing_everything_at_once():
+    """Nhanh + hạn mức 2/cửa sổ: dù có nhiều đoạn, trong mọi cửa sổ chỉ có tối đa 2 request được GỬI đi."""
+    stamps, lock = [], threading.Lock()
+
+    def handler(request):
+        with lock:
+            stamps.append(time.monotonic())
+        return _ok()
+
+    limiter = ModelRateLimiter({"openai/gpt-4o": 2}, window_seconds=0.4, margin_seconds=0.0)
+    client = _make_client(handler, rate_limiter=limiter)
+    markdown = _long_markdown()
+    chunks, _ = _split_markdown(markdown)
+    result = client.extract(markdown, {"a": "mô tả"}, parallel=True)
+
+    assert result.success is True and len(stamps) == len(chunks) >= 3
+    stamps.sort()
+    for i in range(len(stamps) - 2):
+        assert stamps[i + 2] - stamps[i] >= 0.35

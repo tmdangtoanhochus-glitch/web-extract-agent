@@ -115,7 +115,9 @@ Chỉ dùng phiên bạn được phép truy cập, qua kết nối HTTPS khi tr
                 "**Chậm (mặc định):** gọi AI tuần tự từng đoạn — an toàn, không tăng tải. "
                 "**Nhanh (tốn):** gọi TẤT CẢ đoạn ĐỒNG THỜI — giảm hẳn thời gian chờ với trang nhiều bản ghi, "
                 "nhưng tăng tải đồng thời lên AI và lên server (không đổi số lượt gọi/chi phí AI so với Chậm). "
-                "Không ảnh hưởng gì với trang ngắn (1 đoạn)."
+                "Hệ thống luôn giữ trong **hạn mức request/phút của model** (cấu hình `AI_MODEL_LIMITS`): model hạn mức thấp "
+                "(vd. 2/phút) thì mỗi phút chỉ gửi tối đa bằng hạn mức, các đoạn còn lại **tự chờ (delay)** — bạn sẽ thấy "
+                "\"đang chờ hạn mức\" ở thanh tiến độ, đó không phải lỗi. Không ảnh hưởng gì với trang ngắn (1 đoạn)."
             )
             parallel_extract = st.checkbox(
                 "Dùng chế độ Nhanh (gọi AI song song — tốn tải hơn)", key="parallel_extract", value=False,

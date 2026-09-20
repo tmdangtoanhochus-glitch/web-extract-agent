@@ -2,6 +2,13 @@
 import httpx
 import streamlit as st
 
+try:
+    from ui.crawl_progress import render_static
+except ModuleNotFoundError as exc:
+    if exc.name != "ui":
+        raise
+    from crawl_progress import render_static
+
 
 def submit_background(api_post, bodies):
     try:
@@ -47,6 +54,9 @@ def render_background(client_factory):
     st.write({key: progress.get(key) for key in ("source_index", "sources", "processed", "requests", "saved", "skipped", "failed")})
     if progress.get("requests"):
         st.progress(min(progress.get("processed", 0) / progress["requests"], 1.0))
+    if progress.get("phase"):
+        st.caption("Nguồn đang xử lý: ① code tải/làm sạch trang, ② AI từng đoạn (mỗi nguồn đặt lại từ đầu).")
+        render_static(progress)
     attempts = st.session_state.get("crawl_attempts", [])
     position = len(attempts) - len(job["configs"]) + progress.get("source_index", 1) - 1
     if progress.get("request_id") and 0 <= position < len(attempts):

@@ -42,7 +42,7 @@ class _FakeAIClient(AIClient):
         self.calls = 0
         self.parallel_calls: list[bool] = []
 
-    def extract(self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False) -> ExtractionResult:
+    def extract(self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False, on_progress=None) -> ExtractionResult:
         self.calls += 1
         self.parallel_calls.append(parallel)
         return self._results.pop(0)
@@ -467,9 +467,9 @@ def test_only_unresolved_fields_are_sent_to_ai_client():
 
     original_extract = ai_client.extract
 
-    def _spy_extract(markdown, field_descriptions, parallel: bool = False):
+    def _spy_extract(markdown, field_descriptions, parallel: bool = False, on_progress=None):
         seen_descriptions.update(field_descriptions)
-        return original_extract(markdown, field_descriptions, parallel=parallel)
+        return original_extract(markdown, field_descriptions, parallel=parallel, on_progress=on_progress)
 
     ai_client.extract = _spy_extract
 
@@ -968,3 +968,53 @@ def test_image_fields_only_affects_fields_explicitly_listed():
     )
 
     assert result.record.data == {"price": 75000000, "date": "2026-09-11"}
+
+
+def test_progress_events_go_fetch_clean_cleaned_save_done_in_order_with_markdown_size():
+    events = []
+    fetcher = _FakeFetcher(default_html="<html><body><p>giá 75.000.000</p></body></html>")
+    result = run_crawl_job(
+        url="https://example.com/gold", field_descriptions={"price": "giá vàng", "date": "ngày"},
+        dataset_name="Tiến độ", fetcher=fetcher, ai_client=_FakeAIClient([_extraction()]), storage=_storage(),
+        on_progress=events.append,
+    )
+    assert result.status == "saved"
+    phases = [e["phase"] for e in events if "phase" in e]
+    assert phases == ["fetch", "clean", "cleaned", "save", "done"]
+    cleaned = next(e for e in events if e["phase"] == "cleaned")
+    assert cleaned["markdown_chars"] > 0
+    assert events[0]["ai_chunks_total"] == 0 and events[0]["ai_chunks_done"] == 0  # đặt lại cho URL mới
+
+
+def test_progress_reports_unchanged_content_as_done_without_ai():
+    fetcher = _FakeFetcher(default_html="<html><body><p>giá 75.000.000</p></body></html>")
+    storage = _storage()
+    common = dict(url="https://example.com/gold", field_descriptions={"price": "giá vàng", "date": "ngày"},
+                  fetcher=fetcher, storage=storage)
+    first = run_crawl_job(ai_client=_FakeAIClient([_extraction()]), dataset_name="Không đổi", **common)
+    events = []
+    run_crawl_job(ai_client=_FakeAIClient([]), dataset_id=first.dataset.dataset_id, on_progress=events.append, **common)
+    assert events[-1]["phase"] == "done" and events[-1]["ai_skipped"] and events[-1]["unchanged"]
+
+
+def test_progress_stops_after_fetch_when_fetch_fails():
+    events = []
+    result = run_crawl_job(
+        url="https://example.com/x", field_descriptions={"price": "giá"}, dataset_name="Lỗi",
+        fetcher=_FakeFetcher(default_html=None), ai_client=_FakeAIClient([]), storage=_storage(),
+        on_progress=events.append,
+    )
+    assert result.status == "fetch_failed"
+    assert [e["phase"] for e in events] == ["fetch"]  # không có "done" giả
+
+
+def test_a_broken_progress_callback_never_breaks_the_crawl():
+    def boom(_):
+        raise RuntimeError("UI hỏng")
+
+    result = run_crawl_job(
+        url="https://example.com/gold", field_descriptions={"price": "giá vàng", "date": "ngày"},
+        dataset_name="Callback hỏng", fetcher=_FakeFetcher(default_html="<html><body><p>x</p></body></html>"),
+        ai_client=_FakeAIClient([_extraction()]), storage=_storage(), on_progress=boom,
+    )
+    assert result.status == "saved"

@@ -29,11 +29,13 @@ from urllib.parse import urlsplit
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, SecretStr, ConfigDict, model_validator, Field
 from ..crawl_tasks import CrawlTasks, QueueFull, TaskNotFound
+from ..progress import PROGRESS_ID_PATTERN, ProgressStore
 from ..bulk_crawl import CrawlOptions, plan_urls, run_bulk, preview_bulk
 from .crawl_reports import create_report_router, context, exception_frames
 
 from ..ai.base import AIClient
 from ..ai.greennode_client import GreenNodeChatClient
+from ..ai.rate_limiter import ModelRateLimiter
 from ..config import load_settings
 from ..fetch.base import FetchEngine, HybridFetcher, domain_of
 from ..fetch.httpx_fetcher import HttpxFetcher
@@ -74,6 +76,9 @@ class CrawlRequest(BaseModel):
     # thời gian chờ nhưng tăng tải đồng thời lên AI/container (không đổi số lượt
     # gọi/chi phí AI so với tuần tự — xem AIClient.extract()).
     parallel_extract: bool = False
+    # UI sinh 32 ký tự hex để hỏi tiến độ (`GET /crawl-progress/{id}`) trong lúc /crawl còn chạy — chỉ chứa nhãn giai
+    # đoạn + số đếm, xem src/progress.py. Không thuộc cấu hình crawl nên loại khỏi config_fingerprint.
+    progress_id: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{32}$")
 
 
 class CrawlResponse(BaseModel):
@@ -186,6 +191,7 @@ def create_app(
         fetcher=fetcher, ai_client=ai_client, storage=storage, confidence_threshold=confidence_threshold
     )
     crawl_tasks = CrawlTasks()
+    progress_store = ProgressStore()
 
     @asynccontextmanager
     async def _lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -208,6 +214,7 @@ def create_app(
 
     app = FastAPI(title="Web Data Extraction & Management Platform", lifespan=_lifespan)
     app.state.crawl_tasks = crawl_tasks
+    app.state.progress_store = progress_store
     if runner_service is not None:
         from .runner import create_runner_router
         from ..runner.service import RunnerError
@@ -225,7 +232,7 @@ def create_app(
         không (đúng khái niệm "liveness", không phải "dependency check")."""
         return {"status": "ok"}
 
-    def crawl_one(req: CrawlRequest, request_fetcher) -> CrawlResponse:
+    def crawl_one(req: CrawlRequest, request_fetcher, on_progress=None) -> CrawlResponse:
         if not req.field_descriptions:
             raise HTTPException(status_code=422, detail="field_descriptions không được rỗng")
         if req.storage_mode not in ("db", "file"):
@@ -246,6 +253,7 @@ def create_app(
                 confidence_threshold=confidence_threshold,
                 image_fields=req.image_fields,
                 parallel_extract=req.parallel_extract,
+                on_progress=on_progress,
             )
             if file_result.status in ("fetch_failed", "extract_failed"):
                 _log_manual_crawl_failure(storage, req.url, file_result.status, file_result.detail)
@@ -278,6 +286,7 @@ def create_app(
             confidence_threshold=confidence_threshold,
             image_fields=req.image_fields,
             parallel_extract=req.parallel_extract,
+            on_progress=on_progress,
         )
 
         if result.status == "dataset_not_found":
@@ -316,6 +325,17 @@ def create_app(
     @app.post("/crawl")
     def crawl(req: CrawlRequest, response: Response):
         return crawl_impl(req, response)
+
+    @app.get("/crawl-progress/{progress_id}")
+    def crawl_progress(progress_id: str):
+        """Tiến độ của 1 lượt /crawl đang chạy (giai đoạn tải/làm sạch/AI/lưu, đoạn AI đã xong/tổng, đang chờ hạn
+        mức). Chỉ nhãn + số đếm — không có nội dung trang hay dữ liệu."""
+        if not PROGRESS_ID_PATTERN.match(progress_id):
+            raise HTTPException(status_code=404, detail="Không có tiến độ")
+        data = progress_store.get(progress_id)
+        if data is None:
+            raise HTTPException(status_code=404, detail="Không có tiến độ")
+        return data
 
     @app.post("/crawl-jobs", status_code=202)
     def submit_crawl(req: CrawlBatchRequest):
@@ -378,7 +398,7 @@ def create_app(
         response.headers.update(headers)
         metadata = context(req.url, req.field_descriptions, req.storage_mode)
         fingerprint = hashlib.sha256(json.dumps(req.model_dump(mode="json", exclude={
-            "cookie_header", "cookie_origin", "dataset_id", "dataset_name", "retry_of"}),
+            "cookie_header", "cookie_origin", "dataset_id", "dataset_name", "retry_of", "progress_id"}),
             sort_keys=True, ensure_ascii=False).encode()).hexdigest()
         metadata.update(config_fingerprint=fingerprint, operation="preview" if preview else "crawl")
         if req.retry_of:
@@ -388,6 +408,8 @@ def create_app(
         storage.add_audit_log("crawl_request", job_id=request_id, detail=metadata)
         if progress:
             progress({"request_id": request_id})
+        # Job nền: dùng dict tiến độ của job; /crawl thường: dùng kho tiến độ theo progress_id do UI gửi.
+        on_progress = progress or (progress_store.reporter(req.progress_id) if req.progress_id else None)
         try:
             retry_indices = None
             if req.retry_of:
@@ -439,13 +461,14 @@ def create_app(
                             dataset_id=req.dataset_id, dataset_name=req.dataset_name, storage_mode=req.storage_mode,
                             file_path=req.file_path, write_mode=req.write_mode or "append", image_fields=req.image_fields,
                             confidence_threshold=confidence_threshold, retry_indices=retry_indices,
-                            checkpoint=checkpoint, progress=progress, parallel_extract=req.parallel_extract)
+                            checkpoint=checkpoint, progress=progress, parallel_extract=req.parallel_extract,
+                            on_progress=on_progress)
                 except ValueError as exc:
                     raise HTTPException(400, str(exc)) from None
             else:
                 if preview:
                     raise HTTPException(400, "Bật kéo nhiều lượt / kéo bảng để xem trước")
-                result = crawl_one(req, request_fetcher).model_dump()
+                result = crawl_one(req, request_fetcher, on_progress).model_dump()
             storage.add_audit_log("crawl_outcome", job_id=request_id,
                                   detail={key: result.get(key) for key in ("status", "dataset_id", "saved", "skipped", "failed", "results")})
             return {**result, "request_id": request_id}
@@ -654,11 +677,16 @@ def _build_default_app() -> FastAPI:
                        if engine == "hybrid" else playwright_fetcher)
         except Exception:
             logging.getLogger(__name__).exception("Không khởi tạo được Playwright — dùng httpx")
+    rate_limiter = ModelRateLimiter(settings.ai_model_limits)
+    logging.getLogger(__name__).info(
+        "Hạn mức AI theo model (AI_MODEL_LIMITS): %s", settings.ai_model_limits or "chưa cấu hình (chỉ dùng header API)"
+    )
     ai_client = GreenNodeChatClient(
         base_url=settings.ai_base_url,
         api_key=settings.ai_api_key,
         model=settings.ai_model,
         timeout_seconds=settings.ai_timeout_seconds,
+        rate_limiter=rate_limiter,
     )
     if not settings.admin_username or not settings.admin_password:
         logging.getLogger(__name__).warning(

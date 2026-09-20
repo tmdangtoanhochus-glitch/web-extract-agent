@@ -117,6 +117,41 @@ Dành cho đồng nghiệp tham gia kiểm thử. Tài liệu chia thành từng
 
 **Mong đợi:** tạo, sửa, xóa lịch thành công, có thông báo. (Không cần đợi tới giờ chạy để kết luận Đạt cho ca này.)
 
+## 4b. Crawl — tiến độ, chế độ Nhanh/Chậm và hạn mức AI
+
+> Hệ thống đang dùng model có hạn mức thấp (qwen: **2 request/phút**). Với trang dài chia nhiều đoạn, bạn sẽ thấy hệ thống
+> **tự chờ** giữa các lượt gọi AI — đó là hành vi đúng, không phải lỗi treo. Trang dài để thử: https://vi.wikipedia.org/wiki/H%C3%A0_N%E1%BB%99i
+> (chia nhiều đoạn, mất vài phút). Field gợi ý: `topic` (chủ đề đoạn văn), `fact` (một sự kiện hoặc số liệu được nêu).
+
+### TC-CR-40 Hai thanh tiến độ tách biệt
+1. Chạy crawl trang S1 (trang ngắn), quan sát ngay dưới nút chạy.
+
+**Mong đợi:** thấy dòng trạng thái ("⚙️ CODE đang chạy — tải trang" rồi "🤖 MODEL AI đang xử lý" rồi "✅ Hoàn tất") và **hai thanh**:
+`① Crawl` (tải, làm sạch, kèm số ký tự gửi AI) và `② AI` (số đoạn xong/tổng). Có đồng hồ ⏱ đếm giây.
+
+### TC-CR-41 Trang dài: tiến độ từng đoạn
+1. Crawl trang Wikipedia "Hà Nội" ở chế độ mặc định (Chậm).
+
+**Mong đợi:** thanh ② hiện `k/N đoạn xong · 🤖 model đang xử lý đoạn x/N`; thanh ① đã đầy. Khi hết hạn mức request/phút, dòng trạng thái
+đổi sang "⏳ Đang chờ hạn mức AI ~Ns (… không phải lỗi)" và số giây đếm ngược; sau đó tự chạy tiếp. Kết thúc `saved`; nếu trang quá dài,
+Console log ghi "Trang quá dài — chỉ xử lý 6 đoạn đầu".
+
+### TC-CR-42 Chế độ Nhanh bị giới hạn theo hạn mức
+1. Bước 3, mở "Tốc độ trích xuất AI", tick "Dùng chế độ Nhanh"; crawl lại đúng trang ở TC-CR-41 (dùng dataset khác).
+
+**Mong đợi:** lúc đầu có đoạn xử lý ngay nhưng mỗi phút **chỉ gửi tối đa bằng hạn mức** (qwen: 2 lượt/phút), các đoạn còn lại hiện "chờ hạn mức" rồi lần lượt chạy;
+**không** có đoạn nào lỗi 429 (thanh ② không hiện "⚠ đoạn lỗi"). Tổng thời gian ngắn hơn chế độ Chậm, nhưng không nhanh gấp N lần vì hạn mức.
+
+### TC-CR-43 Trang không cần AI hoặc không đổi
+1. Chạy lại đúng URL/field của TC-CR-01 với dataset có sẵn khi trang không đổi.
+
+**Mong đợi:** thanh ② hiện "không cần gọi (nội dung không đổi)" và đầy ngay; không có lượt gọi AI.
+
+### TC-CR-44 Lỗi tải trang không hiện tiến độ giả
+1. Crawl URL S6 (403).
+
+**Mong đợi:** lỗi báo rõ như TC-CR-07; thanh không hiện "Hoàn tất" giả.
+
 ## 5. Crawl — tuân thủ và trang cần đăng nhập
 
 ### TC-CR-30 Lưu ý website chặn tự động
@@ -252,6 +287,7 @@ Dành cho đồng nghiệp tham gia kiểm thử. Tài liệu chia thành từng
 - Website có CAPTCHA, WAF, OTP/2FA hoặc chặn IP đám mây có thể không lấy được dữ liệu. Hệ thống **không** vượt qua các cơ chế này.
 - Trang nặng JavaScript chạy chậm hơn trang tĩnh (Playwright).
 - Chất lượng trích xuất phụ thuộc mô tả field và model AI; giá trị confidence thấp được gắn cờ "cần xem lại".
+- Model AI có **hạn mức request/phút** (qwen 2/phút): trang dài phải chờ giữa các lượt gọi; chế độ Nhanh không nhanh hơn hạn mức cho phép.
 - Mỗi lượt chỉ dùng được một cookie cho một nguồn.
 - Automation chạy trên **máy người dùng** và cần cài Python; không có chế độ chạy trên server.
 - Tài khoản Automation do admin cấp; không có đăng ký tự do.

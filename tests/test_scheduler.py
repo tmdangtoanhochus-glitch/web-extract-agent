@@ -31,7 +31,7 @@ class _FakeAIClient(AIClient):
     def __init__(self):
         self.calls = 0
 
-    def extract(self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False) -> ExtractionResult:
+    def extract(self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False, on_progress=None) -> ExtractionResult:
         self.calls += 1
         return ExtractionResult(
             records=[{name: FieldExtraction(value="v", confidence=0.9, evidence="e") for name in field_descriptions}],
@@ -40,7 +40,7 @@ class _FakeAIClient(AIClient):
 
 
 class _RaisingAIClient(AIClient):
-    def extract(self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False) -> ExtractionResult:
+    def extract(self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False, on_progress=None) -> ExtractionResult:
         raise RuntimeError("boom - lỗi không mong đợi")
 
 

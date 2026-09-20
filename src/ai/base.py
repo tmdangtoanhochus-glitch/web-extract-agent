@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 
 @dataclass(frozen=True)
@@ -48,7 +48,11 @@ class AIClient(ABC):
 
     @abstractmethod
     def extract(
-        self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False
+        self,
+        markdown: str,
+        field_descriptions: dict[str, str],
+        parallel: bool = False,
+        on_progress: Optional[Callable[[dict], None]] = None,
     ) -> ExtractionResult:
         """Trích xuất các field được mô tả trong `field_descriptions`
         (tên field -> mô tả tự nhiên) từ nội dung `markdown` đã làm sạch.
@@ -59,6 +63,9 @@ class AIClient(ABC):
         chính container API (không đổi số lượt gọi/chi phí AI so với tuần tự —
         chỉ đổi CÁCH gọi, không đổi SỐ LƯỢNG). Không ảnh hưởng gì khi trang chỉ
         có 1 đoạn.
+
+        `on_progress(sự_kiện: dict)`: báo tiến độ (đoạn đã xong/tổng, đang gọi model hay đang chờ hạn mức) cho UI.
+        Lỗi trong callback không được làm hỏng việc trích xuất.
 
         KHÔNG raise exception cho lỗi mạng/response không hợp lệ — trả về
         `ExtractionResult(success=False, error=...)`, giống quy ước của

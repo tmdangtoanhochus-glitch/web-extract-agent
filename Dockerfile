@@ -14,11 +14,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
+# --timeout/--retries: build từng gặp treo vô thời hạn khi mạng ảo Docker Desktop
+# (WSL2) bị "đứng" giữa chừng một request — pip mặc định không có timeout cho kết
+# nối đã mở, nên treo mãi thay vì retry. Ép timeout để tự phát hiện và thử lại.
+RUN pip install --no-cache-dir --timeout 30 --retries 5 -r requirements.txt
 COPY requirements-auth.txt .
-RUN pip install --no-cache-dir -r requirements-auth.txt
+RUN pip install --no-cache-dir --timeout 30 --retries 5 -r requirements-auth.txt
 COPY requirements-runner.txt .
-RUN pip install --no-cache-dir -r requirements-runner.txt
+RUN pip install --no-cache-dir --timeout 30 --retries 5 -r requirements-runner.txt
 
 RUN playwright install --with-deps chromium
 

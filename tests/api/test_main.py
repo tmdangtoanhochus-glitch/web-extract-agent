@@ -35,7 +35,7 @@ class _FakeAIClient(AIClient):
         self._error = error
         self.parallel_calls: list[bool] = []
 
-    def extract(self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False) -> ExtractionResult:
+    def extract(self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False, on_progress=None) -> ExtractionResult:
         self.parallel_calls.append(parallel)
         if not self._success:
             return ExtractionResult(success=False, error=self._error)
@@ -694,3 +694,72 @@ def test_unified_admin_login_runner_admin_session_opens_crawl_admin(tmp_path):
         assert client.get("/admin/errors", auth=("legacy", "legacy-pass")).status_code == 200  # dự phòng
     finally:
         repo.close()
+
+
+class _EmittingAIClient(_FakeAIClient):
+    """Giả lập AI chia 3 đoạn: báo tiến độ như GreenNodeChatClient thật."""
+
+    def extract(self, markdown, field_descriptions, parallel=False, on_progress=None):
+        for done in range(4):
+            if on_progress:
+                on_progress({"phase": "ai", "ai_model": "m", "ai_chunks_total": 3, "ai_chunks_done": done})
+        return super().extract(markdown, field_descriptions, parallel=parallel)
+
+
+def _app_with(ai_client):
+    storage = SQLiteStorage(":memory:")
+    app = create_app(fetcher=_FakeFetcher(), ai_client=ai_client, storage=storage,
+                     admin_username=_ADMIN_AUTH[0], admin_password=_ADMIN_AUTH[1])
+    return TestClient(app), storage
+
+
+def test_crawl_progress_endpoint_reports_phases_and_ai_chunks_for_the_given_progress_id():
+    client, _ = _app_with(_EmittingAIClient())
+    progress_id = "0123456789abcdef0123456789abcdef"
+
+    response = client.post("/crawl", json={
+        "url": "https://example.com/gold", "field_descriptions": {"price": "giá"},
+        "dataset_name": "Tiến độ", "progress_id": progress_id,
+    })
+    assert response.status_code == 200
+
+    data = client.get(f"/crawl-progress/{progress_id}").json()
+    assert data["phase"] == "done"  # đã qua tải -> làm sạch -> AI -> lưu
+    assert data["ai_chunks_total"] == 3 and data["ai_chunks_done"] == 3
+    assert data["markdown_chars"] > 0  # biết trang sau khi làm sạch dài bao nhiêu
+
+
+def test_crawl_progress_unknown_or_malformed_id_returns_404():
+    client, _ = _app_with(_FakeAIClient())
+    assert client.get("/crawl-progress/" + "f" * 32).status_code == 404
+    assert client.get("/crawl-progress/khong-hop-le").status_code == 404
+    assert client.get("/crawl-progress/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").status_code == 404
+
+
+def test_crawl_rejects_a_malformed_progress_id_with_422():
+    client, _ = _app_with(_FakeAIClient())
+    response = client.post("/crawl", json={
+        "url": "https://example.com/gold", "field_descriptions": {"price": "giá"},
+        "dataset_name": "X", "progress_id": "../../etc/passwd",
+    })
+    assert response.status_code == 422
+
+
+def test_crawl_without_progress_id_still_works():
+    client, _ = _app_with(_EmittingAIClient())
+    response = client.post("/crawl", json={
+        "url": "https://example.com/gold", "field_descriptions": {"price": "giá"}, "dataset_name": "Không tiến độ",
+    })
+    assert response.status_code == 200 and response.json()["status"] == "saved"
+
+
+def test_progress_id_is_not_part_of_the_config_fingerprint_so_retries_still_match():
+    client, storage = _app_with(_FakeAIClient())
+    for progress_id in ("a" * 32, "b" * 32):
+        client.post("/crawl", json={
+            "url": "https://example.com/gold", "field_descriptions": {"price": "giá"},
+            "dataset_name": "Vân tay", "progress_id": progress_id,
+        })
+    prints = [e.detail["config_fingerprint"] for e in storage.list_audit_log(limit=20)
+              if e.event_type == "crawl_request"]
+    assert len(prints) == 2 and prints[0] == prints[1]

@@ -21,6 +21,7 @@ import io
 import os
 from html import escape
 from urllib.parse import urlsplit, urlunsplit
+from uuid import uuid4
 try:
     from ui.crawl_controls import options_controls, run_controls, report_panel, retry_panel, export_controls
     from ui.crawl_jobs import submit_background, render_background
@@ -43,6 +44,7 @@ import httpx
 import streamlit as st
 from ui.theme import apply_theme, hero
 from ui.notices import blocking_notice
+from ui.crawl_progress import ProgressPanel, run_with_progress
 
 API_BASE_URL = os.environ.get("API_BASE_URL", "http://localhost:8000")
 
@@ -104,23 +106,51 @@ def _api_get(path: str) -> Optional[Any]:
         return None
 
 
-def _api_post(path: str, json_body: dict) -> Optional[dict]:
+def _http_post(path: str, json_body: dict) -> tuple:
+    """Chỉ HTTP, KHÔNG gọi st.* — chạy được trong luồng nền (xem ui/crawl_progress.run_with_progress).
+    Trả (status_code, json|None, request_id, lỗi_mạng|None)."""
     try:
         with _client() as client:
             resp = client.post(path, json=json_body)
-            request_id = resp.headers.get("X-Crawl-Request-ID")
-            if path in {"/crawl", "/crawl/preview"} and st.session_state.get("crawl_attempts"):
-                st.session_state.crawl_attempts[-1]["request_id"] = request_id
             try:
-                result = resp.json()
+                payload = resp.json()
             except ValueError:
-                result = {"detail": "API returned an unreadable response"}
-            if resp.status_code >= 400:
-                return {"_http_error": resp.status_code, "detail": result.get("detail"), "request_id": request_id}
-            return result
-    except httpx.HTTPError:
+                payload = None
+            return resp.status_code, payload, resp.headers.get("X-Crawl-Request-ID"), None
+    except httpx.HTTPError as exc:
+        return None, None, None, exc
+
+
+def _http_get_progress(progress_id: str) -> Optional[dict]:
+    try:
+        with _client() as client:
+            resp = client.get(f"/crawl-progress/{progress_id}")
+            data = resp.json() if resp.status_code == 200 else None
+            return data if isinstance(data, dict) else None
+    except (httpx.HTTPError, ValueError, AttributeError):
+        return None
+
+
+def _api_post(path: str, json_body: dict, panel=None) -> Optional[dict]:
+    """`panel` (ProgressPanel) chỉ dùng cho /crawl 1 URL: request chạy ở luồng nền, còn luồng chính vẽ 2 thanh tiến độ
+    (① code tải/làm sạch, ② AI từng đoạn) bằng cách hỏi /crawl-progress/{id}."""
+    if panel is not None:
+        progress_id = uuid4().hex
+        status, payload, request_id, error = run_with_progress(
+            lambda: _http_post(path, {**json_body, "progress_id": progress_id}),
+            lambda: _http_get_progress(progress_id), panel,
+        )
+    else:
+        status, payload, request_id, error = _http_post(path, json_body)
+    if error is not None:
         st.error("Không kết nối được API. Bạn có thể báo lượt kéo này bên dưới; nếu đã gửi request, hãy kiểm tra dữ liệu trước khi chạy lại.")
         return None
+    if path in {"/crawl", "/crawl/preview"} and st.session_state.get("crawl_attempts"):
+        st.session_state.crawl_attempts[-1]["request_id"] = request_id
+    result = payload if isinstance(payload, dict) else {"detail": "API returned an unreadable response"}
+    if status >= 400:
+        return {"_http_error": status, "detail": result.get("detail"), "request_id": request_id}
+    return result
 
 
 
@@ -453,6 +483,7 @@ def _render_step3() -> None:
         total_urls = len(st.session_state.urls)
         status_box = st.empty()
         progress_bar = st.progress(0.0)
+        panel = None  # 2 thanh tiến độ ① code / ② AI — tạo khi cần (crawl 1 URL trực tiếp)
         for i, url in enumerate(st.session_state.urls):
             status_box.markdown(
                 f'<div style="padding:8px 16px;background:#FFF1E8;border-radius:8px;'
@@ -490,8 +521,13 @@ def _render_step3() -> None:
                 pending_bodies.append(dict(body))
                 body.pop("cookie_header", None)
                 continue
+            use_panel = not preview and not crawl_options
+            if use_panel:
+                if panel is None:
+                    panel = ProgressPanel()
+                panel.reset(f"Tiến độ URL {i + 1}/{total_urls}")
             try:
-                result = _api_post("/crawl/preview" if preview else "/crawl", body)
+                result = _api_post("/crawl/preview" if preview else "/crawl", body, panel if use_panel else None)
             finally:
                 body.pop("cookie_header", None)
             if preview:

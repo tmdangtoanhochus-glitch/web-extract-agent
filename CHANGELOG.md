@@ -1,5 +1,28 @@
 # Changelog
 
+## Hạn mức AI theo model + tiến độ Crawl tách ①CODE / ②AI — 2026-09-20
+**Bối cảnh (đo thật trên key của dự án):** GreenNode đặt hạn mức request/phút RIÊNG cho từng model — qwen3.6-flash **2**,
+glm-5.3-flash / glm-5.2-hackathon / deepseek-v4-pro **5**; token 1 triệu/phút, 100 triệu/ngày (không phải nút thắt). Vượt hạn
+mức trả **429 "API rate limit exceeded"** kèm `Retry-After`. Trước đây code KHÔNG có giới hạn nào cho lời gọi AI và thử lại tức
+thì khi 429 (chắc chắn dính 429 lần nữa) → chế độ "Nhanh" với trang > 2 đoạn sẽ mất đoạn.
+- **Bộ giới hạn theo model** (`src/ai/rate_limiter.py`): cửa sổ trượt 60s, mỗi model một bộ đếm riêng, an toàn giữa các luồng.
+  Vượt hạn mức thì TỰ CHỜ (delay) thay vì bắn rồi nhận 429. Cấu hình bằng `AI_MODEL_LIMITS=model=số,model=số`
+  (mục sai định dạng bị bỏ qua kèm cảnh báo). Header `x-ratelimit-limit-minute` của API (nếu có) **ghi đè** số cấu hình.
+- **Xử lý 429 đúng cách:** chờ đúng `Retry-After` (chặn mọi luồng gọi model đó), thử lại tối đa 4 lần, KHÔNG tính là "đoạn lỗi"
+  và không tiêu hao lần thử lại thường. Chế độ Nhanh giờ mỗi phút chỉ GỬI tối đa bằng hạn mức của model (các đoạn còn lại tự chờ), không bắn cả loạt.
+- **Tiến độ Crawl tách hai thanh** (`ui/crawl_progress.py`): ① CODE — tải trang → làm sạch (kèm số ký tự gửi AI); ② AI — số
+  đoạn xong/tổng, đang xử lý đoạn nào, đang chờ hạn mức còn ~Ns ("không phải lỗi"), thử lại, đoạn lỗi, trang bị cắt. Dòng trạng
+  thái nói rõ ai đang làm: CODE / MODEL AI / chờ hạn mức / đang lưu / hoàn tất. Áp dụng cho crawl 1 URL (luồng nền + hỏi
+  `GET /crawl-progress/{progress_id}` mỗi ~0,8s) và cho job nền (kéo nhiều lượt, chế độ trường).
+- Kỹ thuật: `progress_id` 32 hex do UI sinh (loại khỏi `config_fingerprint`, không lưu vào cấu hình chạy lại/lịch); kho tiến độ
+  trong bộ nhớ tự hết hạn (15 phút, tối đa 500), chỉ chứa nhãn + số đếm, không có nội dung trang/cookie. Lỗi callback tiến độ
+  không bao giờ làm hỏng crawl.
+- Chưa áp dụng bộ giới hạn cho ô phản hồi AI (`AI_DEBUG_*`) và Runner AI (dùng chung key nên vẫn chia sẻ hạn mức thật của model);
+  ô phản hồi đã có giới hạn riêng 20 lượt/phút.
+- Sửa `Dockerfile` gốc cho khớp `Dockerfile.api` (thêm `--timeout/--retries` cho pip) — trước đó test đồng bộ Dockerfile bị đỏ.
+- Test: 676 pass (thêm 51 test: bộ giới hạn với đồng hồ giả + đa luồng, 429/Retry-After/delay/học header, sự kiện tiến độ,
+  kho tiến độ, endpoint, tích hợp UI). Đã xem thực tế bằng trình duyệt với API cục bộ chạy chậm.
+
 ## Chế độ trích xuất "Nhanh (tốn)" / "Chậm" cho trang dài — 2026-09-20
 Người dùng tự tick chọn ở Bước 3 (mặc định **tắt** = Chậm, giữ nguyên `_MAX_CHUNKS=6`):
 - **Chậm (mặc định):** gọi các đoạn tuần tự như hiện tại — an toàn, không tăng tải đồng thời lên AI/server.

@@ -32,12 +32,15 @@ from __future__ import annotations
 import json
 import logging
 import re
+import threading
 from concurrent.futures import ThreadPoolExecutor
-from typing import Any, Optional
+from typing import Any, Callable, Optional
 
 import httpx
 
+from ..progress import safe_emit
 from .base import AIClient, ExtractionResult, FieldExtraction
+from .rate_limiter import ModelRateLimiter
 
 logger = logging.getLogger(__name__)
 
@@ -69,6 +72,7 @@ class GreenNodeChatClient(AIClient):
         temperature: float = 0.0,
         max_tokens: int = 16384,
         client: Optional[httpx.Client] = None,
+        rate_limiter: Optional[ModelRateLimiter] = None,
     ) -> None:
         _warn_if_base_url_missing_v1_suffix(base_url)
         self._base_url = base_url
@@ -78,9 +82,15 @@ class GreenNodeChatClient(AIClient):
         self._temperature = temperature
         self._max_tokens = max_tokens
         self._injected_client = client
+        # Không truyền = không giới hạn cấu hình, nhưng vẫn xử lý 429/Retry-After (xem _extract_chunk_with_retry).
+        self._rate_limiter = rate_limiter or ModelRateLimiter()
 
     def extract(
-        self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False
+        self,
+        markdown: str,
+        field_descriptions: dict[str, str],
+        parallel: bool = False,
+        on_progress: Optional[Callable[[dict], None]] = None,
     ) -> ExtractionResult:
         """Trang dài được chia thành nhiều đoạn (theo ranh giới dòng) và gọi AI từng
         đoạn rồi gộp bản ghi — không cắt bỏ phần đuôi trang nữa (trước đây bản ghi
@@ -96,25 +106,40 @@ class GreenNodeChatClient(AIClient):
         `parallel`: người dùng tự tick chọn (mặc định tắt) — gọi TẤT CẢ đoạn
         ĐỒNG THỜI thay vì tuần tự (xem `_call_chunks_parallel`). Kết quả gộp
         lại giống hệt hành vi tuần tự (đúng thứ tự đoạn, cùng cơ chế thử lại và
-        bỏ qua đoạn lỗi) — chỉ khác THỜI GIAN CHỜ, không đổi số lượt gọi AI."""
+        bỏ qua đoạn lỗi) — chỉ khác THỜI GIAN CHỜ, không đổi số lượt gọi AI.
+
+        Mọi lượt gọi đi qua bộ giới hạn theo model (`ModelRateLimiter`): vượt hạn mức thì TỰ CHỜ (delay) thay vì bắn
+        rồi nhận 429; nếu vẫn gặp 429 thì chờ đúng `Retry-After` rồi thử lại (không tính là đoạn lỗi). `on_progress`
+        nhận số đoạn đã xong/tổng và trạng thái "đang gọi model"/"đang chờ hạn mức" để UI hiển thị."""
         if not field_descriptions:
             raise ValueError("field_descriptions không được rỗng")
         chunks, truncated = _split_markdown(markdown)
+        tracker = _ProgressTracker(on_progress, self._model, len(chunks), truncated)
         if len(chunks) == 1:
-            return self._extract_chunk_with_retry(chunks[0], field_descriptions)
+            return self._run_chunk(chunks[0], field_descriptions, tracker)
         logger.info(
             "Trang dài %d ký tự — chia %d đoạn để gọi AI (%s).",
             len(markdown), len(chunks), "song song" if parallel else "tuần tự",
         )
         results = (
-            self._call_chunks_parallel(chunks, field_descriptions)
+            self._call_chunks_parallel(chunks, field_descriptions, tracker)
             if parallel
-            else [self._extract_chunk_with_retry(chunk, field_descriptions) for chunk in chunks]
+            else [self._run_chunk(chunk, field_descriptions, tracker, index)
+                  for index, chunk in enumerate(chunks, 1)]
         )
         return self._merge_chunk_results(results, truncated, len(chunks))
 
+    def _run_chunk(
+        self, chunk: str, field_descriptions: dict[str, str], tracker: "_ProgressTracker", index: Optional[int] = None
+    ) -> ExtractionResult:
+        if index is not None:  # chỉ chế độ tuần tự biết chắc "đang ở đoạn thứ mấy"
+            tracker.set_current(index)
+        result = self._extract_chunk_with_retry(chunk, field_descriptions, tracker)
+        tracker.chunk_done(result.success)
+        return result
+
     def _call_chunks_parallel(
-        self, chunks: list[str], field_descriptions: dict[str, str]
+        self, chunks: list[str], field_descriptions: dict[str, str], tracker: "_ProgressTracker"
     ) -> list[ExtractionResult]:
         """Gọi tất cả đoạn ĐỒNG THỜI bằng ThreadPoolExecutor (mỗi lượt `_extract_chunk`
         tự tạo `httpx.Client` riêng khi không có client inject — an toàn giữa các
@@ -122,7 +147,7 @@ class GreenNodeChatClient(AIClient):
         THỰC SỰ chạy cùng lúc, không phải tuần tự trá hình."""
         with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
             futures = [
-                executor.submit(self._extract_chunk_with_retry, chunk, field_descriptions)
+                executor.submit(self._run_chunk, chunk, field_descriptions, tracker)
                 for chunk in chunks
             ]
             return [future.result() for future in futures]
@@ -156,16 +181,41 @@ class GreenNodeChatClient(AIClient):
         )
 
     def _extract_chunk_with_retry(
-        self, markdown: str, field_descriptions: dict[str, str]
+        self, markdown: str, field_descriptions: dict[str, str], tracker: Optional["_ProgressTracker"] = None
     ) -> ExtractionResult:
         """Timeout (đọc phản hồi model) thường là tải đột biến tạm thời, không
         phải lỗi cố định — thử lại 1 lần với timeout dài hơn trước khi coi là
-        lỗi hẳn."""
-        result = self._extract_chunk(markdown, field_descriptions, timeout=self._timeout_for(markdown, attempt=1))
-        if result.success:
-            return result
-        logger.info("Gọi AI lỗi (%s) — thử lại 1 lần với timeout dài hơn.", result.error)
-        return self._extract_chunk(markdown, field_descriptions, timeout=self._timeout_for(markdown, attempt=2))
+        lỗi hẳn.
+
+        429 (vượt hạn mức request/phút của GreenNode) KHÁC lỗi thường: đó là lỗi TẠM THỜI có hẹn giờ — chờ đúng
+        `Retry-After` (chặn mọi luồng gọi model này, xem `ModelRateLimiter.penalize`) rồi thử lại, KHÔNG tính vào
+        lần thử lại của lỗi thường; tối đa `_MAX_RATE_LIMIT_RETRIES` lần thì mới coi là lỗi."""
+        attempt = 1
+        rate_limit_retries = 0
+        while True:
+            try:
+                result = self._extract_chunk(
+                    markdown, field_descriptions, timeout=self._timeout_for(markdown, attempt=attempt), tracker=tracker
+                )
+            except _RateLimited as limited:
+                rate_limit_retries += 1
+                if rate_limit_retries > _MAX_RATE_LIMIT_RETRIES:
+                    return ExtractionResult(
+                        success=False,
+                        error=f"rate_limited: vẫn bị giới hạn tốc độ sau {_MAX_RATE_LIMIT_RETRIES} lần chờ",
+                    )
+                logger.warning(
+                    "AI trả 429 (vượt hạn mức) — chờ %.0fs theo Retry-After rồi thử lại (lần %d/%d).",
+                    limited.retry_after, rate_limit_retries, _MAX_RATE_LIMIT_RETRIES,
+                )
+                self._rate_limiter.penalize(self._model, limited.retry_after)
+                continue
+            if result.success or attempt >= 2:
+                return result
+            logger.info("Gọi AI lỗi (%s) — thử lại 1 lần với timeout dài hơn.", result.error)
+            if tracker is not None:
+                tracker.note_retry()
+            attempt = 2
 
     def _timeout_for(self, chunk: str, attempt: int) -> float:
         """Đoạn càng gần kích thước tối đa (_MAX_CHUNK_CHARS) càng cần nhiều thời
@@ -184,7 +234,11 @@ class GreenNodeChatClient(AIClient):
         return scaled * 1.5 if attempt >= 2 else scaled
 
     def _extract_chunk(
-        self, markdown: str, field_descriptions: dict[str, str], timeout: Optional[float] = None
+        self,
+        markdown: str,
+        field_descriptions: dict[str, str],
+        timeout: Optional[float] = None,
+        tracker: Optional["_ProgressTracker"] = None,
     ) -> ExtractionResult:
         payload = {
             "model": self._model,
@@ -196,16 +250,23 @@ class GreenNodeChatClient(AIClient):
             "max_tokens": self._max_tokens,
         }
 
+        # Delay theo hạn mức của model TRƯỚC khi gửi (không tính vào timeout đọc phản hồi).
+        self._rate_limiter.acquire(self._model, on_wait=tracker.on_wait if tracker else None)
         owns_client = self._injected_client is None
         client = self._injected_client or httpx.Client(
             base_url=self._base_url, timeout=timeout if timeout is not None else self._timeout_seconds
         )
+        if tracker is not None:
+            tracker.begin_call()
         try:
             response = client.post(
                 "/chat/completions",
                 json=payload,
                 headers={"Authorization": f"Bearer {self._api_key}"},
             )
+            self._learn_limit(response)
+            if response.status_code == 429:
+                raise _RateLimited(_retry_after_seconds(response))
             response.raise_for_status()
             body = response.json()
             content = body["choices"][0]["message"]["content"]
@@ -219,8 +280,102 @@ class GreenNodeChatClient(AIClient):
             logger.warning("Response AI không hợp lệ: %s", exc)
             return ExtractionResult(success=False, error=f"invalid_ai_response: {exc}")
         finally:
+            if tracker is not None:
+                tracker.end_call()
             if owns_client:
                 client.close()
+
+    def _learn_limit(self, response: httpx.Response) -> None:
+        """Header `x-ratelimit-limit-minute` của GreenNode là nguồn chuẩn cho hạn mức request/phút."""
+        raw = response.headers.get("x-ratelimit-limit-minute")
+        if raw and raw.strip().isdigit():
+            self._rate_limiter.learn(self._model, int(raw.strip()))
+
+
+_MAX_RATE_LIMIT_RETRIES = 4
+_DEFAULT_RETRY_AFTER_SECONDS = 30.0
+_MAX_RETRY_AFTER_SECONDS = 120.0
+
+
+class _RateLimited(Exception):
+    def __init__(self, retry_after: float) -> None:
+        super().__init__(f"rate limited, retry after {retry_after}s")
+        self.retry_after = retry_after
+
+
+def _retry_after_seconds(response: httpx.Response) -> float:
+    for name in ("retry-after", "ratelimit-reset"):
+        raw = response.headers.get(name)
+        try:
+            value = float(raw) if raw is not None else None
+        except ValueError:
+            value = None
+        if value is not None and value >= 0:
+            return min(value + 1.0, _MAX_RETRY_AFTER_SECONDS)
+    return _DEFAULT_RETRY_AFTER_SECONDS
+
+
+class _ProgressTracker:
+    """Gom trạng thái các đoạn (đã xong, đang gọi model, đang chờ hạn mức) thành sự kiện cho UI. An toàn giữa các
+    luồng vì chế độ "Nhanh" gọi các đoạn song song."""
+
+    def __init__(self, callback: Optional[Callable[[dict], None]], model: str, total: int, truncated: bool) -> None:
+        self._callback = callback
+        self._model = model
+        self._lock = threading.Lock()
+        self.total = total
+        self.truncated = truncated
+        self.done = 0
+        self.failed = 0
+        self.retries = 0
+        self.calling = 0
+        self.current: Optional[int] = None
+        self.waiting: dict[int, float] = {}
+        self._emit()
+
+    def _emit(self) -> None:
+        if self._callback is None:
+            return
+        wait = round(min(self.waiting.values())) if self.waiting else 0
+        safe_emit(self._callback, {
+            "phase": "ai", "ai_model": self._model, "ai_chunks_total": self.total,
+            "ai_chunks_done": self.done, "ai_chunks_failed": self.failed, "ai_retries": self.retries,
+            "ai_calling": self.calling, "ai_waiting": len(self.waiting), "ai_wait_seconds": wait,
+            "ai_truncated": self.truncated, "ai_current_chunk": self.current,
+        })
+
+    def set_current(self, index: int) -> None:
+        with self._lock:
+            self.current = index
+            self._emit()
+
+    def on_wait(self, seconds: float) -> None:
+        with self._lock:
+            self.waiting[threading.get_ident()] = seconds
+            self._emit()
+
+    def begin_call(self) -> None:
+        with self._lock:
+            self.waiting.pop(threading.get_ident(), None)
+            self.calling += 1
+            self._emit()
+
+    def end_call(self) -> None:
+        with self._lock:
+            self.calling = max(self.calling - 1, 0)
+            self._emit()
+
+    def note_retry(self) -> None:
+        with self._lock:
+            self.retries += 1
+            self._emit()
+
+    def chunk_done(self, success: bool) -> None:
+        with self._lock:
+            self.done += 1
+            if not success:
+                self.failed += 1
+            self._emit()
 
 
 def _warn_if_base_url_missing_v1_suffix(base_url: str) -> None:

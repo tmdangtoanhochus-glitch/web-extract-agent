@@ -176,7 +176,7 @@ def preview_bulk(*, url, options, field_descriptions, fetcher, storage_mode="db"
 def run_bulk(*, url, field_descriptions, options, fetcher, ai_client, storage,
              dataset_id=None, dataset_name=None, storage_mode="db", file_path=None,
              write_mode="append", key_field=None, confidence_threshold=0.7, image_fields=None,
-             retry_indices=None, checkpoint=None, progress=None, parallel_extract=False):
+             retry_indices=None, checkpoint=None, progress=None, parallel_extract=False, on_progress=None):
     plans = plan_urls(url, options)
     validate_options(field_descriptions, options, storage_mode, write_mode, image_fields)
     indexed_plans = list(enumerate(plans, 1))
@@ -238,7 +238,7 @@ def run_bulk(*, url, field_descriptions, options, fetcher, ai_client, storage,
             if options.mode == "fields":
                 common = dict(url=target, field_descriptions=field_descriptions, fetcher=fetcher,
                               ai_client=ai_client, storage=storage, confidence_threshold=confidence_threshold,
-                              image_fields=image_fields, parallel_extract=parallel_extract)
+                              image_fields=image_fields, parallel_extract=parallel_extract, on_progress=on_progress)
                 result = (run_crawl_job(**common, dataset_id=dataset_id) if dataset else
                           run_file_crawl_job(**common, file_path=file_path, write_mode="append"))
                 status = result.status
