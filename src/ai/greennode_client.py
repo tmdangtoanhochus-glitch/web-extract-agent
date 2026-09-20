@@ -135,12 +135,18 @@ class GreenNodeChatClient(AIClient):
 
     def _timeout_for(self, chunk: str, attempt: int) -> float:
         """Đoạn càng gần kích thước tối đa (_MAX_CHUNK_CHARS) càng cần nhiều thời
-        gian hơn để model đọc và trả JSON cho nhiều bản ghi — không dùng chung 1
-        timeout cố định cho mọi đoạn. `self._timeout_seconds` (từ AI_TIMEOUT_SECONDS)
-        luôn là mức sàn, không bao giờ bị rút ngắn. Lần thử lại (attempt=2) nhân
+        gian hơn — thời gian model trả lời tỉ lệ với SỐ BẢN GHI phải sinh JSON
+        (value+confidence+evidence từng field), không chỉ độ dài input. Đo thật
+        với qwen/qwen3.6-flash qua GreenNode MaaS (2026-09-20, markdown càng
+        nhiều dòng bản ghi càng lâu gần tuyến tính): 10 bản ghi (~1300 ký tự
+        input) ~31s, 25 bản ghi (~3300 ký tự) ~57s, 60 bản ghi (đầy 1 đoạn
+        8000 ký tự) ~101s — hệ số 0.5+ratio (tối đa 1.5x) trước đây chỉ cho tối
+        đa 45s ở đoạn đầy, LUÔN timeout với trang nhiều bản ghi. Hệ số mới hiệu
+        chỉnh theo số liệu đo được, có biên an toàn ~20%; `self._timeout_seconds`
+        (từ AI_TIMEOUT_SECONDS) luôn là mức sàn. Lần thử lại (attempt=2) nhân
         thêm 1.5 lần."""
         ratio = min(len(chunk) / _MAX_CHUNK_CHARS, 1.0) if _MAX_CHUNK_CHARS else 1.0
-        scaled = max(self._timeout_seconds, self._timeout_seconds * (0.5 + ratio))
+        scaled = max(self._timeout_seconds, self._timeout_seconds * (1.0 + 3.0 * ratio))
         return scaled * 1.5 if attempt >= 2 else scaled
 
     def _extract_chunk(

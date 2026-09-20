@@ -12,7 +12,20 @@ các đoạn sau vẫn ổn. Sửa ở `src/ai/greennode_client.py` (không đ�
   `status: "saved"` kèm `detail` giải thích rõ (đã lộ ra `CrawlResponse.detail`, hiển thị trong Console log của UI) —
   trước đây chỉ ghi log server, người dùng không biết dữ liệu bị thiếu.
 - `ExtractionResult`/`AiExtractResult` thêm trường `warning` (khác `error`: `success=True` nhưng chưa trọn vẹn).
-- Test: 615 pass (thêm 8 test cho chia đoạn/thử lại/warning, giữ nguyên hành vi các đoạn thành công 100%).
+- Test: 616 pass (thêm 9 test cho chia đoạn/thử lại/warning, giữ nguyên hành vi các đoạn thành công 100%).
+
+**Hiệu chỉnh timeout theo số liệu đo thật (cùng ngày, sau khi stress-test với model thật qua GreenNode MaaS).**
+Công thức ban đầu (`base*(0.5+ratio)`, tối đa 1.5×) SAI — đo thật với `qwen/qwen3.6-flash` cho thấy thời gian model trả
+lời tỉ lệ gần tuyến tính theo SỐ BẢN GHI cần sinh JSON, không chỉ độ dài input: 10 bản ghi (~1300 ký tự) ~31s, 25 bản
+ghi (~3300 ký tự) ~57s, 60 bản ghi (đầy 1 đoạn 8000 ký tự) ~101,5s — với `AI_TIMEOUT_SECONDS=30` mặc định, công thức
+cũ chỉ cho tối đa 45s ở đoạn đầy nên **luôn timeout** với trang nhiều bản ghi, y hệt lỗi ban đầu. Đổi thành
+`base*(1.0+3.0*ratio)` (tối đa 4× ở đoạn đầy, có biên an toàn ~20%). Đã kiểm chứng lại bằng 2 bài thật với AI/model
+production qua GreenNode:
+- Client trực tiếp, markdown giả lập 60 bản ghi (10.479 ký tự, 2 đoạn): trước khi sửa công thức — **cả 2 đoạn timeout
+  hoàn toàn kể cả sau khi thử lại** (187,5s, 0 bản ghi); sau khi sửa — **60/60 bản ghi**, 115,4s, không lỗi.
+- Qua endpoint `/crawl` thật, trang Wikipedia "Hà Nội" (214.947 ký tự, chia 29 đoạn, xử lý 6 đoạn đầu theo giới hạn):
+  1 đoạn timeout ở lần thử đầu, **thử lại thành công** (nếu không có cơ chế thử lại, code cũ sẽ dừng luôn ở đây, bỏ
+  mất 4 đoạn còn lại) — kết quả `status: "saved"`, 45 bản ghi, `detail` báo đúng phần trang bị cắt bớt.
 
 ## Giao diện dùng chung + hướng dẫn cài Python sau đăng nhập — 2026-09-19
 - **Giao diện:** `ui/theme.py` dùng chung cho Crawl, Automation và Admin (banner, thẻ/tab/nút/khung mở rộng nổi khối, bóng đổ). Tab active có gradient.

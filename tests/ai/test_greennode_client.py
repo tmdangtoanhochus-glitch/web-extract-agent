@@ -302,7 +302,17 @@ def test_retry_uses_a_longer_timeout_than_the_first_attempt():
 
 def test_timeout_floor_never_goes_below_configured_value_for_a_small_chunk():
     client = GreenNodeChatClient(base_url=_BASE_URL, api_key="k", model="openai/gpt-4o", timeout_seconds=30.0)
-    assert client._timeout_for("ngắn", attempt=1) == 30.0
+    timeout = client._timeout_for("ngắn", attempt=1)
+    assert 30.0 <= timeout < 31.0  # gần như bằng mức sàn cho đoạn rất ngắn
+
+
+def test_timeout_for_a_full_chunk_matches_thoi_gian_do_thuc_te_voi_qwen():
+    """Hiệu chỉnh theo số liệu đo thật (xem docstring `_timeout_for`): 1 đoạn đầy
+    8000 ký tự (~60 bản ghi) cần ~101.5s thực tế — timeout phải đủ lớn hơn con số
+    đó với biên an toàn, không chỉ nhỉnh hơn timeout cấu hình 1 chút."""
+    client = GreenNodeChatClient(base_url=_BASE_URL, api_key="k", model="openai/gpt-4o", timeout_seconds=30.0)
+    timeout = client._timeout_for("x" * 8000, attempt=1)
+    assert timeout >= 101.5 * 1.1  # ít nhất hơn 10% so với thời gian đo thật
 
 
 def test_one_bad_chunk_no_longer_kills_the_whole_page_even_when_it_is_the_first_chunk():
