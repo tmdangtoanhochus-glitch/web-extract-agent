@@ -81,6 +81,37 @@ def test_saves_new_record_and_creates_dataset():
     assert result.record.confidence == pytest.approx(0.85)  # avg(0.9, 0.8)
     assert result.record.evidence == {"price": "giá x", "date": "ngày y"}
     assert result.record.needs_review is False  # 0.85 >= ngưỡng mặc định 0.7
+    assert result.detail is None  # không có warning thì không hiện gì
+
+
+def test_ai_partial_success_warning_surfaces_as_detail_on_saved_result():
+    """Trang dài bị bỏ bớt đoạn (do lỗi hoặc quá nhiều đoạn) vẫn lưu được các
+    bản ghi lấy được — `warning` từ AI phải lộ ra ở `PipelineResult.detail` để
+    UI hiển thị cho người dùng biết dữ liệu chưa trọn vẹn, KHÔNG bị nuốt mất."""
+    fetcher = _FakeFetcher(default_html="<html><body><p>giá 75.000.000</p></body></html>")
+    partial = ExtractionResult(
+        records=[{
+            "price": FieldExtraction(value=75000000, confidence=0.9, evidence="giá x"),
+            "date": FieldExtraction(value="2026-09-11", confidence=0.8, evidence="ngày y"),
+        }],
+        raw_response="{}",
+        success=True,
+        warning="1/3 đoạn lỗi sau khi thử lại, đã bỏ qua (giữ các đoạn còn lại): đoạn 1/3: boom",
+    )
+    ai_client = _FakeAIClient([partial])
+    storage = _storage()
+
+    result = run_crawl_job(
+        url="https://example.com/gold",
+        field_descriptions={"price": "giá vàng", "date": "ngày cập nhật"},
+        dataset_name="Giá vàng SJC",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+    )
+
+    assert result.status == "saved"  # thành công một phần vẫn là "saved", không phải lỗi
+    assert result.detail == partial.warning
 
     sources = storage.list_sources(result.dataset.dataset_id, active_only=True)
     assert len(sources) == 1

@@ -33,6 +33,10 @@ class ExtractionResult:
     raw_response: Optional[str] = None
     success: bool = True
     error: Optional[str] = None
+    warning: Optional[str] = None
+    """Ghi chú khi `success=True` nhưng kết quả chưa trọn vẹn (vd. một số đoạn
+    của trang dài bị lỗi và đã bỏ qua, hoặc trang bị cắt bớt vì quá nhiều đoạn)
+    — hiển thị cho người dùng, KHÔNG coi là lỗi."""
 
     @property
     def fields(self) -> dict[str, FieldExtraction]:

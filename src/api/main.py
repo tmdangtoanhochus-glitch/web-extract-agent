@@ -253,6 +253,7 @@ def create_app(
                 confidence=file_result.confidence,
                 needs_review=file_result.needs_review,
                 record_count=file_result.record_count,
+                detail=file_result.detail,
             )
 
         if not req.dataset_id and not req.dataset_name:
@@ -288,6 +289,7 @@ def create_app(
             confidence=result.record.confidence if result.record else None,
             needs_review=result.record.needs_review if result.record else None,
             record_count=result.record_count,
+            detail=result.detail,
         )
 
     @app.exception_handler(RequestValidationError)

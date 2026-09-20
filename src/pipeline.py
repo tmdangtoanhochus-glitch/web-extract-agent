@@ -78,6 +78,7 @@ class AiExtractResult:
     records: list[dict[str, FieldExtraction]] = field(default_factory=list)
     success: bool = True
     error: Optional[str] = None
+    warning: Optional[str] = None
 
 
 def fetch_and_clean(url: str, fetcher: FetchEngine) -> FetchAndClean:
@@ -163,6 +164,8 @@ def ai_extract(
         if not extraction.success:
             logger.warning("[%s] AI extract thất bại: %s", url, extraction.error)
             return AiExtractResult(records=[resolved_fields], success=False, error=extraction.error)
+        if extraction.warning:
+            logger.warning("[%s] AI extract thành công một phần: %s", url, extraction.warning)
 
         # AI trả về array các record — gộp resolved_fields (structured data/cache,
         # dùng chung cho cả trang) vào MỖI record.
@@ -186,8 +189,9 @@ def ai_extract(
             url,
         )
         all_records = [resolved_fields]
+        extraction = None
 
-    return AiExtractResult(records=all_records, success=True)
+    return AiExtractResult(records=all_records, success=True, warning=extraction.warning if extraction else None)
 
 
 def _apply_image_downloads(
@@ -312,6 +316,7 @@ def run_crawl_job(
         dataset=dataset,
         record=saved_records[0] if saved_records else None,
         record_count=len(saved_records),
+        detail=extraction.warning,
     )
 
 
@@ -400,4 +405,5 @@ def run_file_crawl_job(
         confidence=first_confidence,
         needs_review=first_needs_review,
         record_count=len(extraction.records),
+        detail=extraction.warning,
     )

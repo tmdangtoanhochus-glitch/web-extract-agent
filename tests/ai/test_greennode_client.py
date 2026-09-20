@@ -248,6 +248,116 @@ def test_extract_raises_value_error_for_empty_field_descriptions():
         client.extract("nội dung", {})
 
 
+def test_transient_error_is_retried_once_then_succeeds():
+    """Timeout/lỗi mạng thường là tải đột biến tạm thời — lượt gọi đầu lỗi,
+    lượt thử lại (2) phải thành công mà KHÔNG coi cả extract() là lỗi."""
+    calls = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.ReadTimeout("boom", request=request)
+        return httpx.Response(200, json=_openai_response(
+            json.dumps({"price": {"value": 100, "confidence": 0.9, "evidence": "e"}})))
+
+    client = _make_client(handler)
+    result = client.extract("nội dung", {"price": "giá"})
+
+    assert len(calls) == 2
+    assert result.success is True
+    assert result.fields["price"].value == 100
+    assert result.warning is None  # thành công ngay ở lần thử lại -> không cần cảnh báo
+
+
+def test_single_chunk_fails_even_after_retry_returns_failure():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("boom", request=request)
+
+    client = _make_client(handler)
+    result = client.extract("nội dung", {"price": "giá"})
+
+    assert result.success is False
+    assert "boom" in result.error
+
+
+def test_retry_uses_a_longer_timeout_than_the_first_attempt():
+    seen_timeouts = []
+
+    class RecordingClient(httpx.Client):
+        def post(self, *args, **kwargs):
+            seen_timeouts.append(self.timeout)
+            raise httpx.ReadTimeout("boom", request=httpx.Request("POST", _BASE_URL))
+
+    # _make_client injects 1 client cố định (không đổi timeout được qua tham số
+    # `timeout` của _extract_chunk) — dựng trực tiếp GreenNodeChatClient KHÔNG
+    # inject client để mỗi lần gọi tự tạo httpx.Client mới với timeout tương ứng.
+    client = GreenNodeChatClient(
+        base_url=_BASE_URL, api_key="k", model="openai/gpt-4o", timeout_seconds=30.0,
+    )
+    first = client._timeout_for("x" * 8000, attempt=1)
+    second = client._timeout_for("x" * 8000, attempt=2)
+    assert second > first
+    assert first >= 30.0  # timeout cấu hình luôn là mức sàn, không bị rút ngắn
+
+
+def test_timeout_floor_never_goes_below_configured_value_for_a_small_chunk():
+    client = GreenNodeChatClient(base_url=_BASE_URL, api_key="k", model="openai/gpt-4o", timeout_seconds=30.0)
+    assert client._timeout_for("ngắn", attempt=1) == 30.0
+
+
+def test_one_bad_chunk_no_longer_kills_the_whole_page_even_when_it_is_the_first_chunk():
+    """Trước đây: đoạn ĐẦU TIÊN lỗi -> cả trang extract_failed dù các đoạn sau ổn.
+    Giờ: bỏ qua đoạn lỗi (đã thử lại), giữ bản ghi các đoạn còn lại, coi là
+    thành công một phần (có warning)."""
+    seen_prompts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = json.loads(request.content)["messages"][1]["content"]
+        seen_prompts.append(content)
+        if "dòng 0 " in content:  # đoạn đầu luôn lỗi, kể cả sau khi thử lại
+            raise httpx.ReadTimeout("boom", request=request)
+        n = len(seen_prompts)
+        return httpx.Response(200, json=_openai_response(
+            json.dumps([{"a": {"value": f"r{n}", "confidence": 0.9, "evidence": "e"}}])))
+
+    client = _make_client(handler)
+    markdown = "\n".join(f"dòng {i} " + "x" * 90 for i in range(200))  # ~20k ký tự, chia >= 3 đoạn
+    result = client.extract(markdown, {"a": "mô tả"})
+
+    assert result.success is True
+    assert len(result.records) >= 1  # các đoạn sau đoạn 1 vẫn được giữ lại
+    assert result.warning is not None
+    assert "đoạn 1" in result.warning and "boom" in result.warning
+
+
+def test_warning_is_none_when_every_chunk_succeeds():
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_openai_response(
+            json.dumps({"price": {"value": 1, "confidence": 1, "evidence": "e"}})))
+
+    client = _make_client(handler)
+    result = client.extract("nội dung ngắn", {"price": "giá"})
+
+    assert result.success is True
+    assert result.warning is None
+
+
+def test_page_beyond_max_chunks_reports_truncation_warning_instead_of_silent_drop():
+    def handler(request: httpx.Request) -> httpx.Response:
+        n = len([1 for _ in [request]]) or 1
+        return httpx.Response(200, json=_openai_response(
+            json.dumps([{"a": {"value": "r", "confidence": 0.9, "evidence": "e"}}])))
+
+    client = _make_client(handler)
+    # 7 đoạn ~8000 ký tự (vượt _MAX_CHUNKS=6) để kích hoạt truncation.
+    markdown = "\n".join(f"dòng {i} " + "x" * 90 for i in range(900))
+    result = client.extract(markdown, {"a": "mô tả"})
+
+    assert result.success is True
+    assert result.warning is not None
+    assert "quá dài" in result.warning and "6 đoạn đầu" in result.warning
+
+
 def test_long_markdown_is_chunked_not_truncated():
     """Trang dài được chia đoạn, bản ghi ở phần đuôi không bị mất."""
     seen_prompts = []

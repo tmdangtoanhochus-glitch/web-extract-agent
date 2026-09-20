@@ -1,5 +1,19 @@
 # Changelog
 
+## AI extract chịu tải trang dài tốt hơn (chia đoạn) — 2026-09-20
+Trang danh sách dài (vd. batdongsan.com.vn) hay bị `extract_failed` vì đoạn ĐẦU TIÊN timeout làm hỏng cả lượt, dù
+các đoạn sau vẫn ổn. Sửa ở `src/ai/greennode_client.py` (không đổi endpoint/model — vẫn đúng format GreenNode MaaS):
+- **Thử lại 1 lần mỗi đoạn** khi lỗi (timeout thường là tải đột biến tạm thời), với timeout dài hơn ở lần thử lại.
+- **Timeout theo kích thước đoạn**, không cố định cho mọi đoạn — đoạn gần 8000 ký tự được timeout dài hơn đoạn ngắn;
+  `AI_TIMEOUT_SECONDS` luôn là mức sàn, không bị rút ngắn.
+- **Một đoạn lỗi (kể cả đoạn đầu) không còn làm hỏng cả trang** — bỏ qua đoạn đó, giữ bản ghi các đoạn còn lại; chỉ
+  báo lỗi khi TẤT CẢ đoạn đều lỗi.
+- **Không còn cắt bớt trang âm thầm.** Khi có đoạn bị bỏ qua hoặc trang vượt quá 6 đoạn (48.000 ký tự), kết quả vẫn
+  `status: "saved"` kèm `detail` giải thích rõ (đã lộ ra `CrawlResponse.detail`, hiển thị trong Console log của UI) —
+  trước đây chỉ ghi log server, người dùng không biết dữ liệu bị thiếu.
+- `ExtractionResult`/`AiExtractResult` thêm trường `warning` (khác `error`: `success=True` nhưng chưa trọn vẹn).
+- Test: 615 pass (thêm 8 test cho chia đoạn/thử lại/warning, giữ nguyên hành vi các đoạn thành công 100%).
+
 ## Giao diện dùng chung + hướng dẫn cài Python sau đăng nhập — 2026-09-19
 - **Giao diện:** `ui/theme.py` dùng chung cho Crawl, Automation và Admin (banner, thẻ/tab/nút/khung mở rộng nổi khối, bóng đổ). Tab active có gradient.
   Trái tim 🧡 thay bằng huy hiệu **MSB**; đặt file `ui/assets/msb_logo.png` (.svg/.jpg/.webp) để dùng logo thật ở banner và biểu tượng tab.

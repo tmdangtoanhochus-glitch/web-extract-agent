@@ -81,27 +81,71 @@ class GreenNodeChatClient(AIClient):
     def extract(self, markdown: str, field_descriptions: dict[str, str]) -> ExtractionResult:
         """Trang dài được chia thành nhiều đoạn (theo ranh giới dòng) và gọi AI từng
         đoạn rồi gộp bản ghi — không cắt bỏ phần đuôi trang nữa (trước đây bản ghi
-        ở phần sau bị mất im lặng)."""
+        ở phần sau bị mất im lặng).
+
+        Mỗi đoạn: thử lại 1 lần với timeout dài hơn nếu lỗi (timeout của model
+        thường là tải đột biến tạm thời — xem `_extract_chunk_with_retry`). Một
+        đoạn lỗi (kể cả đoạn đầu) KHÔNG làm hỏng cả lượt — bỏ qua đoạn đó, tiếp
+        tục các đoạn còn lại; chỉ trả lỗi khi TẤT CẢ đoạn đều lỗi. Kết quả thành
+        công một phần (có đoạn bị bỏ, hoặc trang bị cắt vì quá nhiều đoạn) được
+        báo qua `warning`, không phải `error`."""
         if not field_descriptions:
             raise ValueError("field_descriptions không được rỗng")
-        chunks = _split_markdown(markdown)
+        chunks, truncated = _split_markdown(markdown)
         if len(chunks) == 1:
-            return self._extract_chunk(chunks[0], field_descriptions)
+            return self._extract_chunk_with_retry(chunks[0], field_descriptions)
         logger.info("Trang dài %d ký tự — chia %d đoạn để gọi AI.", len(markdown), len(chunks))
         records: list = []
         raw_parts: list[str] = []
+        chunk_errors: list[str] = []
         for index, chunk in enumerate(chunks, 1):
-            result = self._extract_chunk(chunk, field_descriptions)
+            result = self._extract_chunk_with_retry(chunk, field_descriptions)
             if not result.success:
-                if not records:
-                    return result
-                logger.warning("Đoạn %d/%d lỗi (%s) — giữ %d bản ghi đã có.", index, len(chunks), result.error, len(records))
-                break
+                logger.warning(
+                    "Đoạn %d/%d lỗi sau khi thử lại (%s) — bỏ qua đoạn này, tiếp tục các đoạn còn lại.",
+                    index, len(chunks), result.error,
+                )
+                chunk_errors.append(f"đoạn {index}/{len(chunks)}: {result.error}")
+                continue
             records.extend(result.records)
             raw_parts.append(result.raw_response or "")
-        return ExtractionResult(records=records, raw_response="\n".join(raw_parts), success=True)
+        if not records:
+            return ExtractionResult(
+                success=False,
+                error="; ".join(chunk_errors) if chunk_errors else "không có đoạn nào trả về bản ghi",
+            )
+        return ExtractionResult(
+            records=records,
+            raw_response="\n".join(raw_parts),
+            success=True,
+            warning=_build_warning(chunk_errors, truncated, len(chunks)),
+        )
 
-    def _extract_chunk(self, markdown: str, field_descriptions: dict[str, str]) -> ExtractionResult:
+    def _extract_chunk_with_retry(
+        self, markdown: str, field_descriptions: dict[str, str]
+    ) -> ExtractionResult:
+        """Timeout (đọc phản hồi model) thường là tải đột biến tạm thời, không
+        phải lỗi cố định — thử lại 1 lần với timeout dài hơn trước khi coi là
+        lỗi hẳn."""
+        result = self._extract_chunk(markdown, field_descriptions, timeout=self._timeout_for(markdown, attempt=1))
+        if result.success:
+            return result
+        logger.info("Gọi AI lỗi (%s) — thử lại 1 lần với timeout dài hơn.", result.error)
+        return self._extract_chunk(markdown, field_descriptions, timeout=self._timeout_for(markdown, attempt=2))
+
+    def _timeout_for(self, chunk: str, attempt: int) -> float:
+        """Đoạn càng gần kích thước tối đa (_MAX_CHUNK_CHARS) càng cần nhiều thời
+        gian hơn để model đọc và trả JSON cho nhiều bản ghi — không dùng chung 1
+        timeout cố định cho mọi đoạn. `self._timeout_seconds` (từ AI_TIMEOUT_SECONDS)
+        luôn là mức sàn, không bao giờ bị rút ngắn. Lần thử lại (attempt=2) nhân
+        thêm 1.5 lần."""
+        ratio = min(len(chunk) / _MAX_CHUNK_CHARS, 1.0) if _MAX_CHUNK_CHARS else 1.0
+        scaled = max(self._timeout_seconds, self._timeout_seconds * (0.5 + ratio))
+        return scaled * 1.5 if attempt >= 2 else scaled
+
+    def _extract_chunk(
+        self, markdown: str, field_descriptions: dict[str, str], timeout: Optional[float] = None
+    ) -> ExtractionResult:
         payload = {
             "model": self._model,
             "messages": [
@@ -114,7 +158,7 @@ class GreenNodeChatClient(AIClient):
 
         owns_client = self._injected_client is None
         client = self._injected_client or httpx.Client(
-            base_url=self._base_url, timeout=self._timeout_seconds
+            base_url=self._base_url, timeout=timeout if timeout is not None else self._timeout_seconds
         )
         try:
             response = client.post(
@@ -156,9 +200,10 @@ _MAX_CHUNK_CHARS = 8000
 _MAX_CHUNKS = 6
 
 
-def _split_markdown(markdown: str) -> list[str]:
+def _split_markdown(markdown: str) -> tuple[list[str], bool]:
     """Chia markdown thành các đoạn <= _MAX_CHUNK_CHARS theo ranh giới dòng (dòng
-    quá dài tự cắt cứng). Tối đa _MAX_CHUNKS đoạn — vượt quá thì log cảnh báo."""
+    quá dài tự cắt cứng). Tối đa _MAX_CHUNKS đoạn — vượt quá thì cắt bớt và trả
+    `truncated=True` để gọi nơi báo cho người dùng (xem `_build_warning`)."""
     chunks: list[str] = []
     current: list[str] = []
     size = 0
@@ -172,10 +217,26 @@ def _split_markdown(markdown: str) -> list[str]:
             size += len(piece) + 1
     if current:
         chunks.append("\n".join(current))
-    if len(chunks) > _MAX_CHUNKS:
+    truncated = len(chunks) > _MAX_CHUNKS
+    if truncated:
         logger.warning("Trang quá dài (%d đoạn) — chỉ xử lý %d đoạn đầu.", len(chunks), _MAX_CHUNKS)
         chunks = chunks[:_MAX_CHUNKS]
-    return chunks or [""]
+    return (chunks or [""]), truncated
+
+
+def _build_warning(chunk_errors: list[str], truncated: bool, total_chunks: int) -> Optional[str]:
+    parts = []
+    if chunk_errors:
+        parts.append(
+            f"{len(chunk_errors)}/{total_chunks} đoạn lỗi sau khi thử lại, đã bỏ qua (giữ các đoạn còn lại): "
+            + "; ".join(chunk_errors)
+        )
+    if truncated:
+        parts.append(
+            f"Trang quá dài — chỉ xử lý {_MAX_CHUNKS} đoạn đầu (~{_MAX_CHUNKS * _MAX_CHUNK_CHARS} ký tự); "
+            "phần cuối trang chưa được trích xuất."
+        )
+    return " | ".join(parts) if parts else None
 
 
 def _build_user_prompt(markdown: str, field_descriptions: dict[str, str]) -> str:
