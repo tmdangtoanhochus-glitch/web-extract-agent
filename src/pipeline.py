@@ -111,13 +111,17 @@ def ai_extract(
     field_descriptions: dict[str, str],
     ai_client: AIClient,
     storage: StorageEngine,
+    parallel_extract: bool = False,
 ) -> AiExtractResult:
     """Trích xuất field theo thứ tự ưu tiên: structured data (JSON-LD/Open
     Graph, CLAUDE.md mục 2) → cache chiến lược theo domain (CLAUDE.md mục 5)
     → AI cho field còn lại. Dùng chung cho cả luồng DB và luồng file.
 
     Trang có thể có NHIỀU bản ghi — `resolved_fields` (structured data/cache,
-    áp dụng chung cho cả trang) được gộp vào TỪNG record AI trả về."""
+    áp dụng chung cho cả trang) được gộp vào TỪNG record AI trả về.
+
+    `parallel_extract`: người dùng tự tick chọn ở Bước 3 (mặc định tắt) — chỉ có
+    tác dụng khi trang dài bị chia nhiều đoạn, xem `AIClient.extract()`."""
     logger.info("[%s] Bắt đầu trích xuất %d field: %s", url, len(field_descriptions), list(field_descriptions))
     structured = extract_structured_data(html)
     domain = domain_of(url)
@@ -160,7 +164,7 @@ def ai_extract(
             "[%s] Gửi nội dung trang (%d ký tự markdown) cho AI trích xuất %d field còn lại: %s",
             url, len(markdown), len(remaining_descriptions), list(remaining_descriptions),
         )
-        extraction = ai_client.extract(markdown, remaining_descriptions)
+        extraction = ai_client.extract(markdown, remaining_descriptions, parallel=parallel_extract)
         if not extraction.success:
             logger.warning("[%s] AI extract thất bại: %s", url, extraction.error)
             return AiExtractResult(records=[resolved_fields], success=False, error=extraction.error)
@@ -235,6 +239,7 @@ def run_crawl_job(
     confidence_threshold: float = _DEFAULT_CONFIDENCE_THRESHOLD,
     image_fields: Optional[list[str]] = None,
     images_root: Path = IMAGES_ROOT,
+    parallel_extract: bool = False,
 ) -> PipelineResult:
     """Crawl 1 URL và lưu kết quả vào DB — có thể lưu NHIỀU record nếu trang
     có nhiều bản ghi (`extraction.records`, xem `ai_extract()`).
@@ -282,7 +287,10 @@ def run_crawl_job(
         logger.info("Nội dung %s chưa đổi (content_hash trùng) — không lưu record mới.", url)
         return PipelineResult(status="unchanged", dataset=dataset, record=latest)
 
-    extraction = ai_extract(url, fac.fetch_result.html, fac.markdown, field_descriptions, ai_client, storage)
+    extraction = ai_extract(
+        url, fac.fetch_result.html, fac.markdown, field_descriptions, ai_client, storage,
+        parallel_extract=parallel_extract,
+    )
     if not extraction.success:
         return PipelineResult(status="extract_failed", dataset=dataset, detail=extraction.error)
 
@@ -333,6 +341,7 @@ def run_file_crawl_job(
     confidence_threshold: float = _DEFAULT_CONFIDENCE_THRESHOLD,
     image_fields: Optional[list[str]] = None,
     images_root: Path = IMAGES_ROOT,
+    parallel_extract: bool = False,
 ) -> FileCrawlResult:
     """Crawl 1 URL và ghi kết quả ra file (`src/storage/file_writer.py`,
     JSON/CSV/XLSX/Parquet theo đuôi file) — KHÔNG dedup theo content_hash,
@@ -349,7 +358,10 @@ def run_file_crawl_job(
         logger.info("Fetch thất bại cho %s: %s", url, fac.fetch_result.error)
         return FileCrawlResult(status="fetch_failed", detail=fac.fetch_result.error)
 
-    extraction = ai_extract(url, fac.fetch_result.html, fac.markdown, field_descriptions, ai_client, storage)
+    extraction = ai_extract(
+        url, fac.fetch_result.html, fac.markdown, field_descriptions, ai_client, storage,
+        parallel_extract=parallel_extract,
+    )
     if not extraction.success:
         return FileCrawlResult(status="extract_failed", detail=extraction.error)
 

@@ -69,6 +69,11 @@ class CrawlRequest(BaseModel):
     # mục 3): bắt buộc kèm lý do, mỗi lần áp dụng đều log WARNING.
     ignore_robots: bool = False
     ignore_robots_reason: Optional[str] = None
+    # Người dùng tự tick chọn ở Bước 3 (mặc định tắt) — chỉ có tác dụng khi trang
+    # dài bị chia nhiều đoạn: gọi các đoạn ĐỒNG THỜI thay vì tuần tự, giảm hẳn
+    # thời gian chờ nhưng tăng tải đồng thời lên AI/container (không đổi số lượt
+    # gọi/chi phí AI so với tuần tự — xem AIClient.extract()).
+    parallel_extract: bool = False
 
 
 class CrawlResponse(BaseModel):
@@ -240,6 +245,7 @@ def create_app(
                 storage=storage,
                 confidence_threshold=confidence_threshold,
                 image_fields=req.image_fields,
+                parallel_extract=req.parallel_extract,
             )
             if file_result.status in ("fetch_failed", "extract_failed"):
                 _log_manual_crawl_failure(storage, req.url, file_result.status, file_result.detail)
@@ -271,6 +277,7 @@ def create_app(
             storage=storage,
             confidence_threshold=confidence_threshold,
             image_fields=req.image_fields,
+            parallel_extract=req.parallel_extract,
         )
 
         if result.status == "dataset_not_found":
@@ -432,7 +439,7 @@ def create_app(
                             dataset_id=req.dataset_id, dataset_name=req.dataset_name, storage_mode=req.storage_mode,
                             file_path=req.file_path, write_mode=req.write_mode or "append", image_fields=req.image_fields,
                             confidence_threshold=confidence_threshold, retry_indices=retry_indices,
-                            checkpoint=checkpoint, progress=progress)
+                            checkpoint=checkpoint, progress=progress, parallel_extract=req.parallel_extract)
                 except ValueError as exc:
                     raise HTTPException(400, str(exc)) from None
             else:

@@ -110,14 +110,24 @@ Chỉ dùng phiên bạn được phép truy cập, qua kết nối HTTPS khi tr
                        "và được ghi log kèm lý do.")
             st.checkbox("Bỏ qua robots.txt cho lượt kéo này", key="ignore_robots")
             st.text_input("Lý do bỏ qua (bắt buộc nếu bật)", key="ignore_robots_reason")
+        with st.expander("Tốc độ trích xuất AI (chỉ ảnh hưởng trang dài bị chia nhiều đoạn)"):
+            st.caption(
+                "**Chậm (mặc định):** gọi AI tuần tự từng đoạn — an toàn, không tăng tải. "
+                "**Nhanh (tốn):** gọi TẤT CẢ đoạn ĐỒNG THỜI — giảm hẳn thời gian chờ với trang nhiều bản ghi, "
+                "nhưng tăng tải đồng thời lên AI và lên server (không đổi số lượt gọi/chi phí AI so với Chậm). "
+                "Không ảnh hưởng gì với trang ngắn (1 đoạn)."
+            )
+            parallel_extract = st.checkbox(
+                "Dùng chế độ Nhanh (gọi AI song song — tốn tải hơn)", key="parallel_extract", value=False,
+            )
         submitted = st.form_submit_button("🚀 Chạy crawl", type="primary", disabled=busy)
         preview = st.form_submit_button("Xem trước đợt kéo", disabled=not bulk_enabled or busy)
         st.caption("Xem trước bảng chỉ tải trang đầu, không lưu record. Cookie được xóa sau mỗi lần gửi; cần dán lại khi chạy thật.")
     if cookie and not cookie_consent and (submitted or preview):
         st.error("Bạn đã dán cookie nhưng chưa tích xác nhận chấp nhận rủi ro nên **chưa chạy**. "
                  "Tích ô xác nhận (hoặc xóa cookie) rồi thử lại.")
-        return False, origin, "", False
-    return submitted, origin, cookie, preview
+        return False, origin, "", False, parallel_extract
+    return submitted, origin, cookie, preview, parallel_extract
 
 
 def report_panel(api_post):

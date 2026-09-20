@@ -40,9 +40,11 @@ class _FakeAIClient(AIClient):
     def __init__(self, results: list[ExtractionResult]):
         self._results = list(results)
         self.calls = 0
+        self.parallel_calls: list[bool] = []
 
-    def extract(self, markdown: str, field_descriptions: dict[str, str]) -> ExtractionResult:
+    def extract(self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False) -> ExtractionResult:
         self.calls += 1
+        self.parallel_calls.append(parallel)
         return self._results.pop(0)
 
 
@@ -82,6 +84,48 @@ def test_saves_new_record_and_creates_dataset():
     assert result.record.evidence == {"price": "giá x", "date": "ngày y"}
     assert result.record.needs_review is False  # 0.85 >= ngưỡng mặc định 0.7
     assert result.detail is None  # không có warning thì không hiện gì
+    assert ai_client.parallel_calls == [False]  # không tick "Nhanh" -> mặc định tuần tự
+
+
+def test_parallel_extract_flag_is_passed_down_to_ai_client():
+    """Người dùng tick 'Nhanh' ở Bước 3 -> `parallel_extract=True` phải tới đúng
+    `ai_client.extract(..., parallel=True)`, không bị rơi mất dọc đường."""
+    fetcher = _FakeFetcher(default_html="<html><body><p>giá 75.000.000</p></body></html>")
+    ai_client = _FakeAIClient([_extraction()])
+    storage = _storage()
+
+    run_crawl_job(
+        url="https://example.com/gold",
+        field_descriptions={"price": "giá vàng", "date": "ngày cập nhật"},
+        dataset_name="Giá vàng SJC",
+        fetcher=fetcher,
+        ai_client=ai_client,
+        storage=storage,
+        parallel_extract=True,
+    )
+
+    assert ai_client.parallel_calls == [True]
+
+
+def test_parallel_extract_flag_is_passed_down_for_file_storage_mode_too():
+    fetcher = _FakeFetcher(default_html="<html><body><p>giá 75.000.000</p></body></html>")
+    ai_client = _FakeAIClient([_extraction()])
+    storage = _storage()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        run_file_crawl_job(
+            url="https://example.com/gold",
+            field_descriptions={"price": "giá vàng", "date": "ngày cập nhật"},
+            file_path="out.csv",
+            write_mode="new_file",
+            fetcher=fetcher,
+            ai_client=ai_client,
+            storage=storage,
+            exports_root=Path(tmp),
+            parallel_extract=True,
+        )
+
+    assert ai_client.parallel_calls == [True]
 
 
 def test_ai_partial_success_warning_surfaces_as_detail_on_saved_result():
@@ -423,9 +467,9 @@ def test_only_unresolved_fields_are_sent_to_ai_client():
 
     original_extract = ai_client.extract
 
-    def _spy_extract(markdown, field_descriptions):
+    def _spy_extract(markdown, field_descriptions, parallel: bool = False):
         seen_descriptions.update(field_descriptions)
-        return original_extract(markdown, field_descriptions)
+        return original_extract(markdown, field_descriptions, parallel=parallel)
 
     ai_client.extract = _spy_extract
 

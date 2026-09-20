@@ -47,9 +47,18 @@ class AIClient(ABC):
     """Interface chung cho mọi AI client dùng ở bước classify/extract."""
 
     @abstractmethod
-    def extract(self, markdown: str, field_descriptions: dict[str, str]) -> ExtractionResult:
+    def extract(
+        self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False
+    ) -> ExtractionResult:
         """Trích xuất các field được mô tả trong `field_descriptions`
         (tên field -> mô tả tự nhiên) từ nội dung `markdown` đã làm sạch.
+
+        `parallel`: người dùng tự tick chọn ở UI (mặc định tắt) — trang dài bị
+        chia nhiều đoạn thì gọi các đoạn ĐỒNG THỜI thay vì tuần tự, giảm hẳn
+        tổng thời gian chờ nhưng tăng tải đồng thời lên endpoint AI và lên
+        chính container API (không đổi số lượt gọi/chi phí AI so với tuần tự —
+        chỉ đổi CÁCH gọi, không đổi SỐ LƯỢNG). Không ảnh hưởng gì khi trang chỉ
+        có 1 đoạn.
 
         KHÔNG raise exception cho lỗi mạng/response không hợp lệ — trả về
         `ExtractionResult(success=False, error=...)`, giống quy ước của

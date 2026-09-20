@@ -284,3 +284,45 @@ def test_step1_shows_blocking_notice_about_captcha_and_bot_protection():
     assert not app.exception
     assert any("chặn hoặc không cho phép truy cập tự động" in str(w.value) for w in app.warning)
     assert any("CAPTCHA" in str(m.value) for m in app.markdown)
+
+
+def test_parallel_extract_defaults_off_and_is_sent_when_ticked(monkeypatch):
+    """Ô 'Dùng chế độ Nhanh' mặc định TẮT (Chậm); người dùng tự tick mới bật —
+    giá trị đi thẳng vào body gửi lên /crawl."""
+    bodies = []
+
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def post(self, path, json=None, **kw):
+            bodies.append((path, dict(json or {})))
+            return httpx.Response(200, json={"status": "saved"}, request=httpx.Request("POST", "http://t"))
+    monkeypatch.setattr(httpx, "Client", Client)
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.session_state["step"] = 3
+    app.session_state["urls"] = ["https://example.test/page"]
+    app.session_state["fields"] = [{"name": "price", "desc": "Price"}]
+    app.session_state["dataset_name"] = "History"
+    app.run()
+    assert not app.exception
+    checkbox = next(c for c in app.checkbox if c.label == "Dùng chế độ Nhanh (gọi AI song song — tốn tải hơn)")
+    assert checkbox.value is False  # mặc định tắt
+
+    next(w for w in app.button if w.label == "🚀 Chạy crawl").click().run()
+    assert not app.exception
+    crawl_body = next(body for path, body in bodies if path == "/crawl")
+    assert crawl_body["parallel_extract"] is False
+
+    bodies.clear()
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.session_state["step"] = 3
+    app.session_state["urls"] = ["https://example.test/page"]
+    app.session_state["fields"] = [{"name": "price", "desc": "Price"}]
+    app.session_state["dataset_name"] = "History"
+    app.run()
+    next(c for c in app.checkbox if c.label == "Dùng chế độ Nhanh (gọi AI song song — tốn tải hơn)").check().run()
+    next(w for w in app.button if w.label == "🚀 Chạy crawl").click().run()
+    assert not app.exception
+    crawl_body = next(body for path, body in bodies if path == "/crawl")
+    assert crawl_body["parallel_extract"] is True

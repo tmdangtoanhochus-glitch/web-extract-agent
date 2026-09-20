@@ -22,7 +22,7 @@ class SyntheticFetcher:
 
 
 class SyntheticAI:
-    def extract(self, markdown, fields):
+    def extract(self, markdown, fields, parallel: bool = False):
         return ExtractionResult(records=[{k: FieldExtraction("synthetic item", 0.95) for k in fields}])
 
 

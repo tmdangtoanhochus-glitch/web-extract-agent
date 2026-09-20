@@ -32,6 +32,7 @@ from __future__ import annotations
 import json
 import logging
 import re
+from concurrent.futures import ThreadPoolExecutor
 from typing import Any, Optional
 
 import httpx
@@ -78,7 +79,9 @@ class GreenNodeChatClient(AIClient):
         self._max_tokens = max_tokens
         self._injected_client = client
 
-    def extract(self, markdown: str, field_descriptions: dict[str, str]) -> ExtractionResult:
+    def extract(
+        self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False
+    ) -> ExtractionResult:
         """Trang dài được chia thành nhiều đoạn (theo ranh giới dòng) và gọi AI từng
         đoạn rồi gộp bản ghi — không cắt bỏ phần đuôi trang nữa (trước đây bản ghi
         ở phần sau bị mất im lặng).
@@ -88,24 +91,55 @@ class GreenNodeChatClient(AIClient):
         đoạn lỗi (kể cả đoạn đầu) KHÔNG làm hỏng cả lượt — bỏ qua đoạn đó, tiếp
         tục các đoạn còn lại; chỉ trả lỗi khi TẤT CẢ đoạn đều lỗi. Kết quả thành
         công một phần (có đoạn bị bỏ, hoặc trang bị cắt vì quá nhiều đoạn) được
-        báo qua `warning`, không phải `error`."""
+        báo qua `warning`, không phải `error`.
+
+        `parallel`: người dùng tự tick chọn (mặc định tắt) — gọi TẤT CẢ đoạn
+        ĐỒNG THỜI thay vì tuần tự (xem `_call_chunks_parallel`). Kết quả gộp
+        lại giống hệt hành vi tuần tự (đúng thứ tự đoạn, cùng cơ chế thử lại và
+        bỏ qua đoạn lỗi) — chỉ khác THỜI GIAN CHỜ, không đổi số lượt gọi AI."""
         if not field_descriptions:
             raise ValueError("field_descriptions không được rỗng")
         chunks, truncated = _split_markdown(markdown)
         if len(chunks) == 1:
             return self._extract_chunk_with_retry(chunks[0], field_descriptions)
-        logger.info("Trang dài %d ký tự — chia %d đoạn để gọi AI.", len(markdown), len(chunks))
+        logger.info(
+            "Trang dài %d ký tự — chia %d đoạn để gọi AI (%s).",
+            len(markdown), len(chunks), "song song" if parallel else "tuần tự",
+        )
+        results = (
+            self._call_chunks_parallel(chunks, field_descriptions)
+            if parallel
+            else [self._extract_chunk_with_retry(chunk, field_descriptions) for chunk in chunks]
+        )
+        return self._merge_chunk_results(results, truncated, len(chunks))
+
+    def _call_chunks_parallel(
+        self, chunks: list[str], field_descriptions: dict[str, str]
+    ) -> list[ExtractionResult]:
+        """Gọi tất cả đoạn ĐỒNG THỜI bằng ThreadPoolExecutor (mỗi lượt `_extract_chunk`
+        tự tạo `httpx.Client` riêng khi không có client inject — an toàn giữa các
+        luồng, xem `_extract_chunk`). Submit hết rồi mới chờ kết quả để các đoạn
+        THỰC SỰ chạy cùng lúc, không phải tuần tự trá hình."""
+        with ThreadPoolExecutor(max_workers=len(chunks)) as executor:
+            futures = [
+                executor.submit(self._extract_chunk_with_retry, chunk, field_descriptions)
+                for chunk in chunks
+            ]
+            return [future.result() for future in futures]
+
+    def _merge_chunk_results(
+        self, results: list[ExtractionResult], truncated: bool, total_chunks: int
+    ) -> ExtractionResult:
         records: list = []
         raw_parts: list[str] = []
         chunk_errors: list[str] = []
-        for index, chunk in enumerate(chunks, 1):
-            result = self._extract_chunk_with_retry(chunk, field_descriptions)
+        for index, result in enumerate(results, 1):
             if not result.success:
                 logger.warning(
                     "Đoạn %d/%d lỗi sau khi thử lại (%s) — bỏ qua đoạn này, tiếp tục các đoạn còn lại.",
-                    index, len(chunks), result.error,
+                    index, total_chunks, result.error,
                 )
-                chunk_errors.append(f"đoạn {index}/{len(chunks)}: {result.error}")
+                chunk_errors.append(f"đoạn {index}/{total_chunks}: {result.error}")
                 continue
             records.extend(result.records)
             raw_parts.append(result.raw_response or "")
@@ -118,7 +152,7 @@ class GreenNodeChatClient(AIClient):
             records=records,
             raw_response="\n".join(raw_parts),
             success=True,
-            warning=_build_warning(chunk_errors, truncated, len(chunks)),
+            warning=_build_warning(chunk_errors, truncated, total_chunks),
         )
 
     def _extract_chunk_with_retry(

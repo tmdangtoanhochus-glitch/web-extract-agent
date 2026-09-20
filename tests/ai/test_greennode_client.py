@@ -4,12 +4,14 @@
 (`"openai/gpt-4o"`) đúng theo format thật đã xác nhận qua docs.greennode.ai —
 xem docstring `src/ai/greennode_client.py`."""
 import json
+import threading
+import time
 
 import httpx
 import pytest
 
 from src.ai.base import ExtractionResult
-from src.ai.greennode_client import GreenNodeChatClient
+from src.ai.greennode_client import GreenNodeChatClient, _split_markdown
 
 _BASE_URL = "https://greennode.example/v1"
 
@@ -386,3 +388,120 @@ def test_long_markdown_is_chunked_not_truncated():
     assert len(seen_prompts) >= 3
     assert "dòng 199" in seen_prompts[-1]
     assert [r["a"].value for r in result.records] == [f"r{i}" for i in range(1, len(seen_prompts) + 1)]
+
+
+def _long_markdown(num_lines: int = 200) -> str:
+    return "\n".join(f"dòng {i} " + "x" * 90 for i in range(num_lines))  # ~20k ký tự, chia >= 3 đoạn
+
+
+def test_parallel_true_runs_chunks_concurrently_not_sequentially():
+    """`parallel=True` (người dùng tự tick 'Nhanh') phải THỰC SỰ chạy đồng thời —
+    tổng thời gian phải gần bằng đoạn chậm nhất, không phải tổng các đoạn cộng lại."""
+    SLEEP = 0.25
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        time.sleep(SLEEP)
+        return httpx.Response(200, json=_openai_response(
+            json.dumps({"a": {"value": "r", "confidence": 0.9, "evidence": "e"}})))
+
+    client = _make_client(handler)
+    markdown = _long_markdown()
+    chunks, _ = _split_markdown(markdown)
+    num_chunks = len(chunks)
+    assert num_chunks >= 3  # nếu không thì test không kiểm được điều muốn kiểm
+
+    t0 = time.monotonic()
+    result = client.extract(markdown, {"a": "mô tả"}, parallel=True)
+    elapsed = time.monotonic() - t0
+
+    assert result.success is True
+    assert len(result.records) == num_chunks
+    # Song song: gần SLEEP (1 lượt), không phải num_chunks * SLEEP (tuần tự).
+    assert elapsed < SLEEP * num_chunks * 0.6
+
+
+def test_sequential_stays_sequential_for_comparison():
+    """Đối chứng: KHÔNG tick 'Nhanh' (mặc định `parallel=False`) thì tổng thời
+    gian phải gần bằng tổng các đoạn cộng lại, không được tự ý chạy song song."""
+    SLEEP = 0.2
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        time.sleep(SLEEP)
+        return httpx.Response(200, json=_openai_response(
+            json.dumps({"a": {"value": "r", "confidence": 0.9, "evidence": "e"}})))
+
+    client = _make_client(handler)
+    markdown = _long_markdown()
+    chunks, _ = _split_markdown(markdown)
+    num_chunks = len(chunks)
+
+    t0 = time.monotonic()
+    result = client.extract(markdown, {"a": "mô tả"})  # parallel mặc định False
+    elapsed = time.monotonic() - t0
+
+    assert result.success is True
+    assert elapsed >= SLEEP * num_chunks * 0.8
+
+
+def test_parallel_preserves_chunk_order_regardless_of_which_finishes_first():
+    """Đoạn xong SAU vẫn phải nằm ĐÚNG vị trí của nó trong kết quả — không được
+    xáo trộn theo thứ tự hoàn thành khi chạy song song."""
+    lock = threading.Lock()
+    seen_order: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = json.loads(request.content)["messages"][1]["content"]
+        # Đoạn đầu tiên (chứa "dòng 0 ") cố tình xong CHẬM nhất.
+        if "dòng 0 " in content:
+            time.sleep(0.3)
+            value = "cham"
+        else:
+            time.sleep(0.02)
+            value = "nhanh"
+        with lock:
+            seen_order.append(value)
+        return httpx.Response(200, json=_openai_response(
+            json.dumps({"a": {"value": value, "confidence": 0.9, "evidence": "e"}})))
+
+    client = _make_client(handler)
+    markdown = _long_markdown()
+    result = client.extract(markdown, {"a": "mô tả"}, parallel=True)
+
+    assert result.success is True
+    assert seen_order[0] != "cham"  # đoạn khác thực sự xong trước (chứng minh có chạy song song)
+    assert result.records[0]["a"].value == "cham"  # nhưng kết quả vẫn đúng thứ tự đoạn 1 trước
+
+
+def test_parallel_one_bad_chunk_is_skipped_same_as_sequential():
+    """Hành vi bỏ qua đoạn lỗi + giữ warning phải GIỐNG HỆT chế độ tuần tự khi
+    chạy song song — chỉ khác thời gian chờ."""
+    seen_prompts = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        content = json.loads(request.content)["messages"][1]["content"]
+        with threading.Lock():
+            seen_prompts.append(content)
+        if "dòng 0 " in content:
+            raise httpx.ReadTimeout("boom", request=request)
+        return httpx.Response(200, json=_openai_response(
+            json.dumps([{"a": {"value": "r", "confidence": 0.9, "evidence": "e"}}])))
+
+    client = _make_client(handler)
+    result = client.extract(_long_markdown(), {"a": "mô tả"}, parallel=True)
+
+    assert result.success is True
+    assert result.warning is not None
+    assert "đoạn 1" in result.warning and "boom" in result.warning
+
+
+def test_extract_defaults_to_sequential_when_parallel_not_given():
+    """Gọi extract() KHÔNG truyền `parallel` (code cũ/nơi khác gọi) vẫn phải hoạt
+    động — mặc định tuần tự, không lỗi thiếu tham số."""
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=_openai_response(
+            json.dumps({"price": {"value": 1, "confidence": 1, "evidence": "e"}})))
+
+    client = _make_client(handler)
+    result = client.extract("nội dung ngắn", {"price": "giá"})
+
+    assert result.success is True

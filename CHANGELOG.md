@@ -1,5 +1,20 @@
 # Changelog
 
+## Chế độ trích xuất "Nhanh (tốn)" / "Chậm" cho trang dài — 2026-09-20
+Người dùng tự tick chọn ở Bước 3 (mặc định **tắt** = Chậm, giữ nguyên `_MAX_CHUNKS=6`):
+- **Chậm (mặc định):** gọi các đoạn tuần tự như hiện tại — an toàn, không tăng tải đồng thời lên AI/server.
+- **Nhanh (tốn):** gọi TẤT CẢ đoạn ĐỒNG THỜI (`ThreadPoolExecutor`, không cần dependency mới) — giảm hẳn thời gian
+  chờ với trang nhiều bản ghi. **Không đổi số lượt gọi/chi phí AI** so với Chậm — "tốn" ở đây là tải đồng thời lên
+  endpoint AI và lên chính container API (nhiều luồng threadpool cùng lúc), không phải tốn thêm tiền cho cùng dữ
+  liệu. Hành vi gộp kết quả (thứ tự đoạn, thử lại, bỏ qua đoạn lỗi, cảnh báo cắt bớt) giống hệt chế độ Chậm.
+- Xuyên suốt: `AIClient.extract(..., parallel=bool)` → `ai_extract(..., parallel_extract=)` → `run_crawl_job`/
+  `run_file_crawl_job`/`run_bulk` → `CrawlRequest.parallel_extract` (API) → ô tick ở `ui/crawl_controls.py`.
+- **Đã kiểm chứng với model thật** (không chỉ test giả lập): cùng 1 markdown 10.479 ký tự/2 đoạn/60 bản ghi — Chậm
+  115,4s, **Nhanh 47,1s** (~2,4×), cả hai đều 60/60 bản ghi, không lỗi.
+- Test: 625 pass (thêm 9 test: chạy thật song song không phải tuần tự trá hình, giữ đúng thứ tự đoạn dù hoàn thành
+  không theo thứ tự, hành vi bỏ qua đoạn lỗi giống hệt chế độ tuần tự, cờ xuyên đúng từ UI → API → pipeline → AI
+  client, mặc định tắt).
+
 ## AI extract chịu tải trang dài tốt hơn (chia đoạn) — 2026-09-20
 Trang danh sách dài (vd. batdongsan.com.vn) hay bị `extract_failed` vì đoạn ĐẦU TIÊN timeout làm hỏng cả lượt, dù
 các đoạn sau vẫn ổn. Sửa ở `src/ai/greennode_client.py` (không đổi endpoint/model — vẫn đúng format GreenNode MaaS):

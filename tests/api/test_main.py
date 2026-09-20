@@ -33,8 +33,10 @@ class _FakeAIClient(AIClient):
     def __init__(self, success: bool = True, error: str | None = None):
         self._success = success
         self._error = error
+        self.parallel_calls: list[bool] = []
 
-    def extract(self, markdown: str, field_descriptions: dict[str, str]) -> ExtractionResult:
+    def extract(self, markdown: str, field_descriptions: dict[str, str], parallel: bool = False) -> ExtractionResult:
+        self.parallel_calls.append(parallel)
         if not self._success:
             return ExtractionResult(success=False, error=self._error)
         return ExtractionResult(
@@ -106,6 +108,34 @@ def test_crawl_creates_dataset_and_returns_saved_status(client):
     assert body["record_id"]
     assert body["data"] == {"price": "giá trị mẫu"}
     assert body["needs_review"] is False  # confidence 0.9 >= ngưỡng mặc định 0.7
+
+
+def test_crawl_parallel_extract_flag_reaches_ai_client():
+    """Người dùng tick 'Nhanh' ở Bước 3 -> body `parallel_extract: true` gửi lên
+    `/crawl` phải tới đúng `ai_client.extract(..., parallel=True)`. Mặc định
+    (không gửi field này) phải là False, không tự ý bật song song."""
+    fetcher = _FakeFetcher()
+    ai_client = _FakeAIClient()
+    storage = SQLiteStorage(":memory:")
+    app = create_app(
+        fetcher=fetcher, ai_client=ai_client, storage=storage,
+        admin_username=_ADMIN_AUTH[0], admin_password=_ADMIN_AUTH[1],
+    )
+    test_client = TestClient(app)
+
+    test_client.post("/crawl", json={
+        "url": "https://example.com/gold",
+        "field_descriptions": {"price": "giá vàng"},
+        "dataset_name": "Mặc định",
+    })
+    test_client.post("/crawl", json={
+        "url": "https://example.com/gold-2",
+        "field_descriptions": {"price": "giá vàng"},
+        "dataset_name": "Nhanh",
+        "parallel_extract": True,
+    })
+
+    assert ai_client.parallel_calls == [False, True]
 
 
 def test_crawl_flags_needs_review_when_confidence_below_configured_threshold():

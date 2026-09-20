@@ -439,7 +439,9 @@ def _render_step3() -> None:
     crawl_options = options_controls(field_descriptions)
     active_job = st.session_state.get("active_crawl_job")
     busy = bool(active_job and not active_job.get("handled"))
-    submitted, cookie_origin, request_cookie, preview = run_controls(st.session_state.urls, bool(crawl_options), busy)
+    submitted, cookie_origin, request_cookie, preview, parallel_extract = run_controls(
+        st.session_state.urls, bool(crawl_options), busy
+    )
     if submitted or preview:
         st.session_state.crawl_ui_error = None
         st.session_state.crawl_previews = []
@@ -461,6 +463,7 @@ def _render_step3() -> None:
             )
             body: dict[str, Any] = {
                 "url": url, "field_descriptions": field_descriptions, "image_fields": image_fields,
+                "parallel_extract": parallel_extract,
             }
             if is_file_mode:
                 body["storage_mode"] = "file"
