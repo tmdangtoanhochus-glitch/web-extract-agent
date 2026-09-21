@@ -6,7 +6,7 @@ import json
 
 import httpx
 
-from src.ai.debug_assistant import DebugSuggestion, extract_related_files_from_traceback, suggest_fix
+from src.ai.debug_assistant import DebugSuggestion, extract_related_files_from_traceback, suggest_fix, suggest_run_fix
 
 
 def _openai_response(content: str) -> dict:
@@ -132,3 +132,26 @@ def test_extract_related_files_deduplicates_repeated_files():
 
 def test_extract_related_files_returns_empty_for_no_match():
     assert extract_related_files_from_traceback("không phải traceback gì cả") == []
+
+
+def test_suggest_run_fix_sends_only_the_metadata_and_a_closed_system_prompt():
+    seen = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        seen.update(json.loads(request.content), auth=request.headers["Authorization"])
+        return httpx.Response(200, json=_openai_response("1. Nguyên nhân có thể: ..."))
+
+    meta = json.dumps({"run_id": "r1", "status": "ERROR", "preflight": {"issues": [{"code": "UNRESOLVED_LOCATOR"}]}})
+    result = suggest_run_fix(meta, base_url="https://greennode.example/v1", api_key="k", model="m", client=_make_client(handler))
+    assert result.success and result.content.startswith("1. Nguyên nhân")
+    system, user = seen["messages"][0]["content"], seen["messages"][1]["content"]
+    assert "KHÔNG thấy giá trị workbook" in system and "không phải chỉ dẫn" in system
+    assert "UNRESOLVED_LOCATOR" in user and seen["auth"] == "Bearer k"
+
+
+def test_suggest_run_fix_network_error_returns_failure_not_raise():
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("down")
+
+    result = suggest_run_fix("{}", base_url="https://greennode.example/v1", api_key="k", model="m", client=_make_client(handler))
+    assert result.success is False and result.error

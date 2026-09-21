@@ -1,7 +1,10 @@
 """HTTP contracts của Runner; mọi run/artifact đều kiểm tra owner hoặc agent."""
 import base64
-from typing import Literal
-from threading import BoundedSemaphore
+import json
+import time
+from collections import defaultdict, deque
+from typing import Callable, Literal, Optional
+from threading import BoundedSemaphore, Lock
 
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import FileResponse, Response
@@ -11,6 +14,7 @@ from ..runner.service import RunnerError, TERMINAL, digest, safe_path
 from ..runner.preflight_contract import PreflightReport
 from ..runner.discovery import Snapshot, RepairProposal
 from ..runner.recording_plan import RecordingTrace
+from ..runner.run_advice import needs_attention, rule_based_hints, run_metadata
 
 
 class StrictModel(BaseModel):
@@ -73,10 +77,29 @@ class RepairRequest(Discover):
     read_method: Literal["", "css_input", "css_disabled"] = ""
 
 
-def create_runner_router(service, planner=None):
+class RunReport(StrictModel):
+    note: str = Field(default="", max_length=500)
+
+
+def create_runner_router(service, planner=None, advisor: Optional[Callable[[str], object]] = None):
+    """`advisor(metadata_json) -> DebugSuggestion` (AI gợi ý sửa, chỉ nhận metadata); None = chỉ có gợi ý cố định."""
     router = APIRouter(prefix="/runner", tags=["runner"])
     repo = service.repo
     planning_slots = BoundedSemaphore(2)
+    advice_hits: dict = defaultdict(deque)
+    advice_lock = Lock()
+
+    def advice_rate_limited(user_id) -> bool:
+        # Chặn spam tốn AI: tối đa 5 lần gợi ý / phút / người dùng.
+        now = time.monotonic()
+        with advice_lock:
+            hits = advice_hits[user_id]
+            while hits and now - hits[0] > 60:
+                hits.popleft()
+            if len(hits) >= 5:
+                return True
+            hits.append(now)
+            return False
 
     def bearer(authorization: str = Header(default="")):
         if not authorization.startswith("Bearer "):
@@ -296,6 +319,49 @@ def create_runner_router(service, planner=None):
             repo.put("runs", rid, r)
             service.audit("RUN_CANCELLED", u["id"], rid)
         return r
+
+    @router.post("/runs/{rid}/suggest-fix")
+    def suggest_fix(rid: str, u=Depends(user)):
+        """Gợi ý sửa cho run lỗi: luôn có gợi ý cố định theo mã lỗi; AI (nếu bật) chỉ nhận metadata."""
+        with repo.transaction():
+            run = service.owned_run(rid, u)
+            meta = run_metadata(run)
+            if not needs_attention(run):
+                raise HTTPException(409, "Run này không có lỗi cần gợi ý sửa")
+            if advice_rate_limited(u["id"]):
+                raise HTTPException(429, "Bạn hỏi gợi ý quá nhanh, thử lại sau ít phút")
+            service.audit("RUN_SUGGEST_FIX", u["id"], rid)
+        result = {"hints": rule_based_hints(meta), "ai": None, "ai_error": None}
+        if advisor is None:
+            result["ai_error"] = "AI gợi ý sửa chưa được bật trên backend"
+        else:
+            suggestion = advisor(json.dumps(meta, ensure_ascii=False))
+            if suggestion.success:
+                result["ai"] = suggestion.content
+            else:
+                result["ai_error"] = "Chưa nhận được gợi ý từ AI; xem các gợi ý cố định ở trên"
+        return result
+
+    @router.post("/runs/{rid}/report")
+    def report_run(rid: str, req: RunReport, u=Depends(user)):
+        """Người dùng báo lỗi một run cho admin (metadata + ghi chú đã che bí mật, không kèm dữ liệu workbook)."""
+        from .feedback import redact
+        with repo.transaction():
+            run = service.owned_run(rid, u)
+            report_id = service.audit("RUN_REPORTED", u["id"], rid,
+                                      detail={"note": redact(req.note.strip()), "run": run_metadata(run),
+                                              "owner_name": u.get("username")})
+        return {"report_id": report_id, "status": "received"}
+
+    @router.get("/reports")
+    def reports(u=Depends(admin)):
+        """Admin: báo lỗi run do người dùng gửi + các run đang cần chú ý gần đây."""
+        with repo.transaction():
+            reported = sorted((e for e in repo.all("audit") if e["event"] == "RUN_REPORTED"),
+                              key=lambda e: e["at"], reverse=True)[:100]
+            attention = sorted((r for r in repo.all("runs") if needs_attention(r)),
+                               key=lambda r: r["created_at"], reverse=True)[:50]
+            return {"reports": reported, "runs_needing_attention": [run_metadata(r) for r in attention]}
 
     @router.get("/notifications")
     def notifications(u=Depends(user)):

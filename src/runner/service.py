@@ -43,10 +43,13 @@ class Service:
         for name in ("runs", "temp_uploads"):
             (self.root / name).mkdir(parents=True, exist_ok=True)
 
-    def audit(self, event, user_id=None, run_id=None):
+    def audit(self, event, user_id=None, run_id=None, detail=None):
         key = uuid.uuid4().hex
-        self.repo.put("audit", key, {"id": key, "event": event, "user_id": user_id,
-                                    "run_id": run_id, "at": self.clock()})
+        entry = {"id": key, "event": event, "user_id": user_id, "run_id": run_id, "at": self.clock()}
+        if detail is not None:
+            entry["detail"] = detail
+        self.repo.put("audit", key, entry)
+        return key
 
     def add_user(self, username, password, role="user", bootstrap=False):
         if not re.fullmatch(r"[A-Za-z0-9_.-]{3,64}", username) or len(password) < 12 or role not in ("admin", "user"):

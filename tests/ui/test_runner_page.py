@@ -193,3 +193,60 @@ def test_setup_guide_is_hidden_on_login_screen_and_shown_after_login(monkeypatch
     assert overview.proto.expanded
     assert any("chặn hoặc không cho phép truy cập tự động" in str(w.value) for w in app.warning)
     assert "python -m venv .venv" in " ".join(str(c.value) for c in app.code)
+
+
+def _runs_client(runs, requests):
+    class Client:
+        def __init__(self, **kwargs): pass
+        def __enter__(self): return self
+        def __exit__(self, *args): pass
+        def request(self, method, path, json=None, **kw):
+            requests.append((method, path, json))
+            if path == "/runner/me":
+                return httpx.Response(200, json={"id": "u1", "username": "tester", "role": "user"})
+            if path == "/runner/runs":
+                return httpx.Response(200, json=runs)
+            if path.endswith("/suggest-fix"):
+                return httpx.Response(200, json={"hints": ["UNRESOLVED_LOCATOR (sheet steps, dòng 3): điền locator thật"],
+                                                 "ai": "1. Nguyên nhân: locator còn giữ chỗ", "ai_error": None})
+            if path.endswith("/report"):
+                return httpx.Response(200, json={"report_id": "abcdef1234567890", "status": "received"})
+            return httpx.Response(200, json=[])
+    return Client
+
+
+def _run(run_id, status, preflight=None):
+    return {"run_id": run_id, "status": status, "passed": 0, "failed": 0, "errors": 1, "unverified": 0,
+            "duration": 1, "expires_at": None, "deleted_at": None, "preflight": preflight}
+
+
+def test_failed_run_offers_advice_and_report_but_healthy_run_does_not(monkeypatch):
+    requests = []
+    blocked = {"status": "blocked", "active_steps": 2, "active_testcases": 0, "warnings": [],
+               "issues": [{"sheet": "steps", "row": 3, "code": "UNRESOLVED_LOCATOR"}]}
+    monkeypatch.setattr(httpx, "Client", _runs_client([_run("run_bad", "ERROR", blocked), _run("run_ok", "PASSED")], requests))
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.session_state["runner_session"] = "token"
+    app.run()
+    assert not app.exception
+    labels = [b.label for b in app.button]
+    assert "🛠 Gợi ý sửa" in labels and labels.count("🛠 Gợi ý sửa") == 1  # chỉ run lỗi, không phải run PASSED
+    next(b for b in app.button if b.label == "🛠 Gợi ý sửa").click().run()
+    assert not app.exception
+    assert any(path == "/runner/runs/run_bad/suggest-fix" for _, path, _ in requests)
+    text = " ".join(m.value for m in app.markdown)
+    assert "UNRESOLVED_LOCATOR" in text and "locator còn giữ chỗ" in text
+
+
+def test_report_button_sends_note_to_admin(monkeypatch):
+    requests = []
+    monkeypatch.setattr(httpx, "Client", _runs_client([_run("run_bad", "FAILED")], requests))
+    app = AppTest.from_file(str(PAGE), default_timeout=30)
+    app.session_state["runner_session"] = "token"
+    app.run()
+    next(t for t in app.text_area if t.key == "note_run_bad").set_value("Không rõ vì sao lệch").run()
+    next(b for b in app.button if b.label == "Gửi cho admin").click().run()
+    assert not app.exception
+    sent = next(body for _, path, body in requests if path == "/runner/runs/run_bad/report")
+    assert sent == {"note": "Không rõ vì sao lệch"}
+    assert any("abcdef12" in s.value for s in app.success)

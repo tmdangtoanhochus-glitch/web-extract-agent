@@ -296,6 +296,32 @@ with tabs[1]:
                            "đối chiếu màn hình với settings; chỉ sửa settings khi cần và do người dùng quyết định. "
                            "ENTER_AND_ACTIVATE_USER_TESTCASES: tự nhập testcase và chọn active. "
                            "INVALID_WORKBOOK: kiểm tra định dạng và các sheet bắt buộc bằng công cụ local.")
+            preflight_blocked = bool(report) and report["status"] == "blocked"
+            if r["status"] in ("FAILED", "ERROR", "UNVERIFIED", "LOST") or preflight_blocked:
+                st.markdown("**Run này có vấn đề**")
+                advice_key = "runner_advice_" + r["run_id"]
+                ac1, ac2 = st.columns(2)
+                if ac1.button("🛠 Gợi ý sửa", key="advice_" + r["run_id"]):
+                    with st.spinner("Đang phân tích..."):
+                        st.session_state[advice_key] = api("POST", f"/runs/{r['run_id']}/suggest-fix")
+                with ac2.popover("📨 Báo lỗi cho admin"):
+                    st.caption("Chỉ gửi trạng thái, số ca và mã lỗi kiểm tra tĩnh của run này, không gửi dữ liệu workbook. "
+                               "Không dán mật khẩu hoặc token vào ghi chú.")
+                    report_note = st.text_area("Ghi chú thêm (tùy chọn)", key="note_" + r["run_id"], max_chars=500)
+                    if st.button("Gửi cho admin", key="report_" + r["run_id"]):
+                        sent = api("POST", f"/runs/{r['run_id']}/report", {"note": report_note})
+                        if sent:
+                            st.success("Đã gửi cho admin (mã báo lỗi: " + sent["report_id"][:8] + ")")
+                advice = st.session_state.get(advice_key)
+                if advice:
+                    st.markdown("**Gợi ý sửa** (chỉ để tham khảo, bạn tự sửa workbook ở máy local; công cụ không tự sửa hay chạy lại):")
+                    for hint in advice.get("hints", []):
+                        st.markdown("- " + hint)
+                    if advice.get("ai"):
+                        st.markdown("**Gợi ý từ AI** (chỉ dựa trên trạng thái, số ca và mã lỗi, không thấy dữ liệu workbook):")
+                        st.markdown(advice["ai"])
+                    elif advice.get("ai_error"):
+                        st.caption(advice["ai_error"])
             if r["expires_at"]:
                 expiry = datetime.fromtimestamp(r["expires_at"], timezone.utc)
                 st.caption("Hạn artifact: " + expiry.isoformat())

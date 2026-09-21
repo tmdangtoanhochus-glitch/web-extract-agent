@@ -1,5 +1,11 @@
 # Changelog
 
+## Automation: báo lỗi và gợi ý sửa cho run lỗi — 2026-09-21
+- Tab **Lịch sử & kết quả**: run FAILED / ERROR / UNVERIFIED / LOST hoặc bị chặn preflight có nút **🛠 Gợi ý sửa** và **📨 Báo lỗi cho admin**. Gợi ý gồm lớp cố định theo từng mã preflight (`src/runner/run_advice.py`, kiểm thử được) và lớp AI (`suggest_run_fix` trong `src/ai/debug_assistant.py`, dùng AI_DEBUG_*) — cả hai chỉ dựa trên metadata (trạng thái, số ca, mã lỗi, sheet, dòng), không có giá trị workbook, selector, tên file hay mật khẩu. Không có nút áp dụng; tối đa 5 lần gợi ý/phút/người.
+- API: `POST /runner/runs/{id}/suggest-fix`, `POST /runner/runs/{id}/report` (ghi chú che bí mật, lưu audit `RUN_REPORTED`), `GET /runner/reports` (admin). Admin có tab mới **Automation · Run lỗi & gợi ý sửa**. `Service.audit` nhận thêm `detail` (tương thích ngược).
+- Tài liệu: BRD FR-AU-12, FR-AD-07; TEST_GUIDE TC-AU-14; 714 test đạt.
+
+
 ## Nguồn API (JSON) + bỏ lịch lưu file + sửa hướng dẫn kiểm thử — 2026-09-21
 - **Nguồn là API (JSON)**: ô tick ở Bước 1 (`api_source`). Dán link API vào ô URL; tải bằng httpx (không leo thang Playwright), tự tìm mảng bản ghi, ghép field theo tên hoặc mô tả với khóa JSON (bỏ dấu/hoa thường, khóa lồng `a.b`), **không gọi AI**, confidence 1.0, evidence `api:<khóa>`. Lỗi ghép field liệt kê các khóa có sẵn. Chặn `localhost`/IP nội bộ/`.internal`; tối đa 10 triệu ký tự. Module mới `src/api_source.py`; tham số `api_source` chạy xuyên `/crawl`, job nền, kéo nhiều lượt. Đã chạy thật trên jsonplaceholder (100 bản ghi) và dummyjson (10 bản ghi). Nguồn API luôn đi qua engine httpx (`static_fetcher`), vì engine Playwright bọc JSON trong thẻ HTML; lỗi này lộ ra khi kiểm tra trên bản triển khai (`FETCH_ENGINE=playwright`) và được sửa ngay. Chưa hỗ trợ POST và lịch cho nguồn API.
 - **Bỏ lịch lưu file** (đề xuất của Kiên): `POST /schedules` với `storage_mode=file` trả 400; UI Bước 5 chỉ còn lưu DB. Phần thực thi lịch file được giữ để lịch đã tạo trước đây vẫn chạy. Lưu file khi crawl thủ công giữ nguyên (file nằm trên server, tải về qua trình duyệt).

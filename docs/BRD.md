@@ -8,7 +8,7 @@
 | **Trạng thái sản phẩm** | Đã triển khai lên GreenNode AgentBase (UI + API), dùng Postgres GreenNode RDS |
 | **Đối tượng đọc** | Đồng nghiệp, giám khảo, người vận hành, tester |
 
-> **Ghi chú độ tin cậy.** Mỗi yêu cầu có cột *Trạng thái*: **Đạt** = đã có code, có test tự động (697 test) và/hoặc đã kiểm chứng trên bản deploy;
+> **Ghi chú độ tin cậy.** Mỗi yêu cầu có cột *Trạng thái*: **Đạt** = đã có code, có test tự động (714 test) và/hoặc đã kiểm chứng trên bản deploy;
 > **Đạt (offline)** = có code và test tự động nhưng chưa chạy với hạ tầng/AI thật; **Chưa UAT** = cần người dùng thật nghiệm thu; **Kế hoạch** = chưa làm.
 
 ---
@@ -71,7 +71,7 @@
 | BR-05 | Dữ liệu lưu bền vững, không trùng lặp, có lịch sử thay đổi | FR-CR-11..13 |
 | BR-06 | Thu thập định kỳ không cần thao tác thủ công | FR-CR-18 |
 | BR-07 | Tạo và chạy testcase giao diện tự động, dữ liệu nhạy cảm ở lại máy người dùng | FR-AU-01..10 |
-| BR-08 | Quản trị tập trung, người dùng báo lỗi dễ và được phản hồi | FR-AD-01..06 |
+| BR-08 | Quản trị tập trung, người dùng báo lỗi dễ và được phản hồi | FR-AD-01..07 |
 | BR-09 | Triển khai và vận hành trên GreenNode | NFR-DEP-01..05 |
 
 ## 5. Yêu cầu chức năng
@@ -122,6 +122,7 @@
 | FR-AU-09 | Tóm tắt kết quả (PASS/FAIL/ERROR/UNVERIFIED, thời gian) trên web; run chỉ của chủ sở hữu | Trung bình | Đạt |
 | FR-AU-10 | Xóa artifact trên server sau 7 ngày và thông báo trước | Thấp | Đạt |
 | FR-AU-11 | Hướng dẫn cài môi trường Python ngay trên trang; giải thích chức năng cho người mới | Trung bình | Đạt |
+| FR-AU-12 | **Báo lỗi và gợi ý sửa run lỗi** (như Crawl): run FAILED / ERROR / UNVERIFIED / LOST hoặc bị chặn ở preflight có nút **Gợi ý sửa** (gợi ý cố định theo từng mã lỗi kiểm tra tĩnh, kèm gợi ý từ AI nếu bật) và **Báo lỗi cho admin** (kèm ghi chú đã che bí mật). AI và admin chỉ thấy metadata (trạng thái, số ca, mã lỗi, sheet, dòng), không thấy dữ liệu workbook; tối đa 5 lần gợi ý mỗi phút mỗi người; AI không tự sửa hay chạy lại | Trung bình | Đạt (offline: kiểm thử tự động; chưa thử với AI thật) |
 
 ### 5.3 Admin
 
@@ -133,6 +134,7 @@
 | FR-AD-04 | **Phản hồi tự do** ở mọi màn hình: AI_DEBUG phân loại; nếu không phải lỗi (độ tin cậy ≥ 0,75) thì trả lời trực tiếp; nếu là lỗi hoặc không chắc thì chuyển admin kèm trace | Cao | Đạt (offline); AI thật **Chưa UAT** |
 | FR-AD-05 | Quản lý tài khoản Runner: tạo, khóa, mở khóa, đặt lại mật khẩu, xem yêu cầu quên mật khẩu, xem audit | Cao | Đạt |
 | FR-AD-06 | Quản lý cookie theo domain do admin cấu hình (tính năng kế thừa) | Thấp | Đạt |
+| FR-AD-07 | Tab **Automation · Run lỗi & gợi ý sửa**: xem báo lỗi run của người dùng và các run cần chú ý, hỏi AI gợi ý sửa (chỉ đọc) | Trung bình | Đạt (offline) |
 
 ## 6. Yêu cầu phi chức năng
 
@@ -153,7 +155,7 @@
 | NFR-PERF-02 | Trang lớn được chia đoạn ≤ 8000 ký tự khi gọi AI | Đạt |
 | NFR-PERF-03 | Hạn mức AI: mỗi model có bộ đếm request/phút riêng (đo 2026-09-20: qwen3.6-flash 2, glm-5.3-flash 5, glm-5.2-hackathon 5, deepseek-v4-pro 5; Gemma chưa báo header, BTC cho biết 10); hệ thống xếp hàng thay vì nhận 429 | Đạt |
 | NFR-USA-01 | Giao diện tiếng Việt, ba trang thống nhất (Crawl, Automation, Admin), logo MSB | Đạt |
-| NFR-QUA-01 | Bộ test tự động: 697 test đạt (unit, API, UI) | Đạt |
+| NFR-QUA-01 | Bộ test tự động: 714 test đạt (unit, API, UI) | Đạt |
 
 ## 7. Kiến trúc và dữ liệu
 

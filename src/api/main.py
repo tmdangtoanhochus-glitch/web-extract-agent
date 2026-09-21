@@ -228,7 +228,13 @@ def create_app(
         async def runner_error_handler(request, exc):
             return JSONResponse(status_code=exc.code, content={"detail": str(exc)})
 
-        app.include_router(create_runner_router(runner_service, runner_planner))
+        run_advisor = None
+        if ai_debug_base_url and ai_debug_api_key and ai_debug_model:
+            from ..ai.debug_assistant import suggest_run_fix
+            run_advisor = lambda meta_json: suggest_run_fix(
+                meta_json, base_url=ai_debug_base_url, api_key=ai_debug_api_key, model=ai_debug_model,
+                timeout_seconds=ai_debug_timeout_seconds)
+        app.include_router(create_runner_router(runner_service, runner_planner, run_advisor))
 
     @app.get("/health")
     def health() -> dict:

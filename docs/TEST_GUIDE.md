@@ -381,6 +381,14 @@ Các tab trên trang (theo thứ tự xuất hiện): **Chạy testcase · Lịc
 
 **Chức năng:** server lưu **báo cáo tổng hợp** (số ca PASS/FAIL/lỗi, thời gian, kết quả preflight, mã lỗi kèm sheet/dòng nếu bị chặn); Excel chi tiết và ảnh chụp lỗi nằm ở thư mục `runs` của agent trên máy bạn. Báo cáo cloud giữ tối đa 7 ngày. **Mong đợi:** thấy run với 1 ca PASS và 1 ca FAIL; run "mất theo dõi" (LOST) hiện cảnh báo riêng và không tự tạo lại; kết quả gửi muộn hiện là "kết quả nhận muộn", không phải lần chạy mới. Trong file kết quả Excel ở máy bạn: mỗi testcase một dòng, kết quả nhóm (`read_result_group`) được đánh số block đúng, còn kết quả đơn (`read_result_single`) **không** sinh block thừa.
 
+### TC-AU-14 Báo lỗi và gợi ý sửa cho run lỗi
+1. Tạo một run lỗi có chủ đích: đặt vào thư mục `config` một bản sao workbook mẫu đã xóa hết `active=Y` ở sheet `testcases` (hoặc đổi `locator` thành `:not(*)`), rồi tạo run như TC-AU-11. Run sẽ bị chặn ở kiểm tra tĩnh (trạng thái **ERROR**, preflight *blocked*). Có thể thay bằng run **FAILED** của TC02 trong workbook mẫu.
+2. Tab **Lịch sử & kết quả**, mở run vừa lỗi: thấy dòng **Run này có vấn đề** cùng nút **🛠 Gợi ý sửa** và **📨 Báo lỗi cho admin**. Mở một run PASSED để xác nhận **không** có hai nút này.
+3. Bấm **🛠 Gợi ý sửa**. Sau đó bấm **📨 Báo lỗi cho admin**, nhập ghi chú, bấm **Gửi cho admin**.
+4. Đăng nhập Admin (tài khoản admin Runner), tab **Automation · Run lỗi & gợi ý sửa**.
+
+**Chức năng:** giống Crawl (job lỗi và báo lỗi có gợi ý sửa). Gợi ý gồm 2 lớp: **gợi ý cố định theo từng mã lỗi** kiểm tra tĩnh (ví dụ `UNRESOLVED_LOCATOR` sheet `steps` dòng 3: điền locator thật; `ENTER_AND_ACTIVATE_USER_TESTCASES`: tự nhập testcase và đặt `active=Y`) và **gợi ý từ AI** nếu backend đã bật AI (ba phần: nguyên nhân có thể, cách sửa, cần kiểm tra thêm). Cả AI lẫn admin **chỉ thấy metadata**: trạng thái, số ca PASS/FAIL/lỗi, mã lỗi, sheet, số dòng; không thấy giá trị workbook, selector, mật khẩu hay tên file. Không có nút "áp dụng": bạn tự sửa workbook ở máy local. Giới hạn 5 lần gợi ý mỗi phút cho mỗi người. **Mong đợi:** bước 3 hiện các gợi ý cố định đúng mã lỗi của run, kèm gợi ý AI hoặc dòng "AI gợi ý sửa chưa được bật" (khi đó vẫn có gợi ý cố định); gửi báo lỗi báo thành công kèm mã. Bước 4: thấy báo lỗi (người gửi, run, trạng thái, ghi chú; mật khẩu hay token lỡ dán vào ghi chú đã bị che thành `[REDACTED]`) và run trong danh sách "cần chú ý"; nút **🤖 Hỏi AI gợi ý sửa** trả gợi ý cho run đó.
+
 ### TC-AU-13 Thông báo và quên mật khẩu
 1. Tab **Thông báo** xem nhắc báo cáo sắp hết hạn; thử nút **Quên mật khẩu?** ở màn đăng nhập (xem TC-AD-05, TC-AD-06).
 
@@ -415,4 +423,4 @@ Gửi qua khung **💬 Gặp vấn đề? Gửi phản hồi / báo lỗi** ho�
 ## 12. Tiêu chí chấp nhận đợt kiểm thử
 - Toàn bộ ca mức ưu tiên cao (TC-CR-01..07, TC-CR-32, TC-CR-33, TC-AD-01, TC-AD-02, TC-AU-01) đạt.
 - Không còn lỗi ngăn người dùng hoàn thành luồng chính (Crawl 5 bước, đăng nhập admin).
-- Các ca cần AI thật hoặc trang thật (TC-FB-01, TC-AU-03, TC-AU-06 đến TC-AU-13) được ghi nhận kết quả, kể cả khi chưa đạt.
+- Các ca cần AI thật hoặc trang thật (TC-FB-01, TC-AU-03, TC-AU-06 đến TC-AU-14) được ghi nhận kết quả, kể cả khi chưa đạt.

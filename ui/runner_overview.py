@@ -41,7 +41,7 @@ Server chỉ soạn workbook, điều phối và lưu tóm tắt; **thao tác tr
 | **Inspector local** | `inspect_runner.py` kiểm tra từng `locator` còn khớp đúng 1 phần tử hiển thị không; `repair_runner.py` cho bạn rê chuột chọn phần tử thay thế (Ctrl+Alt+L) rồi xuất bản sao đã đổi locator; `try_step_runner.py` chạy thử 1 step thật có xác nhận. | Máy bạn (báo cáo chỉ là metadata) |
 | **Agent** | Tạo agent, nhận token một lần để cấu hình `local_runner_agent.py`. | Server + máy bạn |
 | **Chạy testcase** | Tạo run (agent + workbook); agent claim và thực thi. | Server giao, máy bạn chạy |
-| **Lịch sử & kết quả** | Tổng hợp trạng thái từng run: PASS / FAIL / ERROR, thời gian. Báo cáo chi tiết và ảnh nằm ở `data/local-runner` trên máy bạn. | Server |
+| **Lịch sử & kết quả** | Tổng hợp trạng thái từng run: PASS / FAIL / ERROR, thời gian. Run lỗi có nút **Gợi ý sửa** (gợi ý cố định theo mã lỗi kiểm tra tĩnh + AI, chỉ dựa trên metadata) và **Báo lỗi cho admin**. Báo cáo chi tiết và ảnh nằm ở `data/local-runner` trên máy bạn. | Server |
 | **Thông báo** | Nhắc khi báo cáo sắp hết hạn (lưu tối đa 7 ngày). | Server |
 
 **Quy trình**

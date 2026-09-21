@@ -151,9 +151,9 @@ def _api_delete(path: str) -> Optional[dict]:
 
 
 (tab_errors, tab_credentials, tab_reports,
- tab_auto_users, tab_auto_audit) = st.tabs([
+ tab_auto_users, tab_auto_runs, tab_auto_audit) = st.tabs([
     "Crawl · Job lỗi & gợi ý sửa", "Crawl · Cookie", "Crawl · Báo lỗi từ người dùng",
-    "Automation · Người dùng", "Automation · Audit",
+    "Automation · Người dùng", "Automation · Run lỗi & gợi ý sửa", "Automation · Audit",
 ])
 
 # Đặt trước tab_errors vì tab đó có thể st.stop() khi API lỗi.
@@ -322,6 +322,39 @@ with tab_auto_users:
                     if st.form_submit_button("Đặt lại"):
                         if _runner_api("POST", f"/users/{u['id']}/reset-password", {"new_password": new_pw}):
                             st.success(f"Đã đặt mật khẩu mới cho {u['username']} — tự báo lại cho user qua kênh khác.")
+
+with tab_auto_runs:
+    if _AUTH["kind"] != "bearer":
+        st.info("Cần đăng nhập bằng tài khoản admin Runner.")
+    else:
+        if st.button("🔄 Tải lại", key="reload_runner_reports"):
+            st.rerun()
+        data = _runner_api("GET", "/reports") or {"reports": [], "runs_needing_attention": []}
+        st.caption("Báo lỗi run do người dùng Automation gửi, và các run đang FAILED / ERROR / UNVERIFIED / LOST hoặc bị chặn "
+                   "ở kiểm tra tĩnh. Chỉ có metadata (trạng thái, số ca, mã lỗi), không có dữ liệu workbook. "
+                   "AI chỉ gợi ý để đọc, không tự sửa.")
+        st.markdown(f"**Báo lỗi từ người dùng ({len(data['reports'])})**")
+        if not data["reports"]:
+            st.success("Chưa có báo lỗi nào. ✅")
+        for item in data["reports"]:
+            detail = item.get("detail", {})
+            with st.expander(f"{datetime.fromtimestamp(item['at'], timezone.utc):%Y-%m-%d %H:%M} · "
+                             f"{detail.get('owner_name', '?')} · run {str(item.get('run_id'))[:8]} · {detail.get('run', {}).get('status')}"):
+                st.write("**Ghi chú:** " + (detail.get("note") or "(không có)"))
+                st.json(detail.get("run", {}))
+        st.markdown(f"**Run đang cần chú ý ({len(data['runs_needing_attention'])})**")
+        for meta in data["runs_needing_attention"]:
+            with st.expander(f"{meta['run_id'][:8]} · {meta['status']}"):
+                st.json(meta)
+                key = "admin_run_advice_" + meta["run_id"]
+                if st.button("🤖 Hỏi AI gợi ý sửa", key="ask_run_" + meta["run_id"]):
+                    with st.spinner("Đang hỏi AI..."):
+                        st.session_state[key] = _runner_api("POST", f"/runs/{meta['run_id']}/suggest-fix")
+                advice = st.session_state.get(key)
+                if advice:
+                    for hint in advice.get("hints", []):
+                        st.markdown("- " + hint)
+                    st.markdown(advice.get("ai") or advice.get("ai_error") or "")
 
 with tab_auto_audit:
     if _AUTH["kind"] != "bearer":
