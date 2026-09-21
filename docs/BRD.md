@@ -8,7 +8,7 @@
 | **Trạng thái sản phẩm** | Đã triển khai lên GreenNode AgentBase (UI + API), dùng Postgres GreenNode RDS |
 | **Đối tượng đọc** | Đồng nghiệp, giám khảo, người vận hành, tester |
 
-> **Ghi chú độ tin cậy.** Mỗi yêu cầu có cột *Trạng thái*: **Đạt** = đã có code, có test tự động (696 test) và/hoặc đã kiểm chứng trên bản deploy;
+> **Ghi chú độ tin cậy.** Mỗi yêu cầu có cột *Trạng thái*: **Đạt** = đã có code, có test tự động (697 test) và/hoặc đã kiểm chứng trên bản deploy;
 > **Đạt (offline)** = có code và test tự động nhưng chưa chạy với hạ tầng/AI thật; **Chưa UAT** = cần người dùng thật nghiệm thu; **Kế hoạch** = chưa làm.
 
 ---
@@ -153,7 +153,7 @@
 | NFR-PERF-02 | Trang lớn được chia đoạn ≤ 8000 ký tự khi gọi AI | Đạt |
 | NFR-PERF-03 | Hạn mức AI: mỗi model có bộ đếm request/phút riêng (đo 2026-09-20: qwen3.6-flash 2, glm-5.3-flash 5, glm-5.2-hackathon 5, deepseek-v4-pro 5; Gemma chưa báo header, BTC cho biết 10); hệ thống xếp hàng thay vì nhận 429 | Đạt |
 | NFR-USA-01 | Giao diện tiếng Việt, ba trang thống nhất (Crawl, Automation, Admin), logo MSB | Đạt |
-| NFR-QUA-01 | Bộ test tự động: 696 test đạt (unit, API, UI) | Đạt |
+| NFR-QUA-01 | Bộ test tự động: 697 test đạt (unit, API, UI) | Đạt |
 
 ## 7. Kiến trúc và dữ liệu
 

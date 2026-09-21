@@ -190,6 +190,7 @@ def create_app(
     admin_password: str = "",
     runner_service=None,
     runner_planner=None,
+    static_fetcher: Optional[FetchEngine] = None,
 ) -> FastAPI:
     crawl_scheduler = scheduler or CrawlScheduler(
         fetcher=fetcher, ai_client=ai_client, storage=storage, confidence_threshold=confidence_threshold
@@ -431,7 +432,15 @@ def create_app(
                                  if item.get("status") not in {"saved", "unchanged", "empty"}]
                 if not retry_indices:
                     raise HTTPException(409, "Đợt được chọn không có lượt lỗi để chạy lại")
-            request_fetcher = fetcher
+            source_fetcher = fetcher
+            if req.api_source:
+                try:
+                    assert_public_url(req.url)
+                except ApiSourceError as exc:
+                    raise HTTPException(400, str(exc)) from None
+                # API JSON không cần trình duyệt: dùng engine httpx (Playwright bọc JSON trong thẻ HTML nên không parse được).
+                source_fetcher = static_fetcher or getattr(fetcher, "static_engine", fetcher)
+            request_fetcher = source_fetcher
             if req.cookie_header:
                 cookie = req.cookie_header.get_secret_value()
                 origin = urlsplit(req.cookie_origin or "")
@@ -440,9 +449,9 @@ def create_app(
                     or origin.scheme not in {"http", "https"} or not origin.hostname
                     or origin[:2] != target[:2] or target.username or target.password):
                     raise HTTPException(400, "Invalid cookie or cookie origin")
-                if not hasattr(fetcher, "with_request_cookie"):
+                if not hasattr(source_fetcher, "with_request_cookie"):
                     raise HTTPException(400, "Fetcher does not support per-request cookies")
-                request_fetcher = fetcher.with_request_cookie(req.url, cookie)
+                request_fetcher = source_fetcher.with_request_cookie(req.url, cookie)
             if req.ignore_robots:
                 reason = (req.ignore_robots_reason or "").strip()
                 if len(reason) < 5:
@@ -451,13 +460,6 @@ def create_app(
                     raise HTTPException(400, "Fetcher không hỗ trợ bỏ qua robots.txt theo request")
                 logger.warning("Người dùng yêu cầu BỎ QUA robots.txt cho %s. Lý do: %s", req.url, reason)
                 request_fetcher = request_fetcher.with_robots_ignored(domain_of(req.url), reason)
-            if req.api_source:
-                try:
-                    assert_public_url(req.url)
-                except ApiSourceError as exc:
-                    raise HTTPException(400, str(exc)) from None
-                # API JSON không cần trình duyệt: dùng httpx, tránh HybridFetcher leo thang sang Playwright.
-                request_fetcher = getattr(request_fetcher, "static_engine", request_fetcher)
             if req.crawl_options:
                 if not req.field_descriptions or req.storage_mode not in {"db", "file"}:
                     raise HTTPException(400, "Fields and valid storage mode required")
@@ -711,6 +713,7 @@ def _build_default_app() -> FastAPI:
                                          runner_model, settings.ai_timeout_seconds)
     return create_app(
         fetcher=fetcher,
+        static_fetcher=httpx_fetcher,
         ai_client=ai_client,
         storage=storage,
         ai_debug_base_url=settings.ai_debug_base_url,

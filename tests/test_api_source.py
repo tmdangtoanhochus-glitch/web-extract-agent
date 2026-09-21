@@ -112,3 +112,17 @@ def test_api_endpoint_crawls_json_and_blocks_internal_urls():
     blocked = client.post("/crawl", json={"url": "http://127.0.0.1:8000/x", "api_source": True,
                                           "field_descriptions": {"gia": "giá"}, "dataset_name": "xe2"})
     assert blocked.status_code == 400
+
+
+def test_api_source_uses_static_fetcher_not_the_browser_engine():
+    """Triển khai thật dùng Playwright làm engine chính (bọc JSON trong thẻ HTML): nguồn API phải đi qua httpx."""
+    class Browser(_Fetcher):
+        def fetch(self, url):
+            raise AssertionError("Không được dùng engine trình duyệt cho nguồn API")
+
+    static = _Fetcher(BODY)
+    app = create_app(fetcher=Browser("x"), static_fetcher=static, ai_client=_NoAI(),
+                     storage=SQLiteStorage(":memory:"), admin_username="a", admin_password="b")
+    ok = TestClient(app).post("/crawl", json={"url": "https://api.example.com/items", "api_source": True,
+                                              "field_descriptions": {"gia": "giá"}, "dataset_name": "xe"})
+    assert ok.status_code == 200 and static.calls == ["https://api.example.com/items"]
