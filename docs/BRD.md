@@ -8,7 +8,7 @@
 | **Trạng thái sản phẩm** | Đã triển khai lên GreenNode AgentBase (UI + API), dùng Postgres GreenNode RDS |
 | **Đối tượng đọc** | Đồng nghiệp, giám khảo, người vận hành, tester |
 
-> **Ghi chú độ tin cậy.** Mỗi yêu cầu có cột *Trạng thái*: **Đạt** = đã có code, có test tự động (676 test) và/hoặc đã kiểm chứng trên bản deploy;
+> **Ghi chú độ tin cậy.** Mỗi yêu cầu có cột *Trạng thái*: **Đạt** = đã có code, có test tự động (696 test) và/hoặc đã kiểm chứng trên bản deploy;
 > **Đạt (offline)** = có code và test tự động nhưng chưa chạy với hạ tầng/AI thật; **Chưa UAT** = cần người dùng thật nghiệm thu; **Kế hoạch** = chưa làm.
 
 ---
@@ -97,14 +97,15 @@
 | FR-CR-15 | Lưu ra file CSV/XLSX/Parquet/JSON với các chế độ ghi (thêm, tạo file mới, ghi đè theo khóa) | Trung bình | Đạt |
 | FR-CR-16 | Chế độ kéo nhiều lượt / kéo bảng: khoảng ngày, phân trang, chọn bảng bằng CSS selector, ánh xạ cột, xem trước, tạm dừng, tiếp tục, hủy, chạy lại lượt lỗi | Trung bình | Đạt (offline) |
 | FR-CR-17 | Tải ảnh về `data/images/` cho field được người dùng đánh dấu là ảnh (URL lấy từ HTML, không OCR) | Thấp | Đạt |
-| FR-CR-18 | Lên lịch chạy định kỳ (APScheduler); xem, sửa, xóa lịch | Trung bình | Đạt |
+| FR-CR-18 | Lên lịch chạy định kỳ (APScheduler); xem, sửa, xóa lịch. Lịch **chỉ lưu vào DB**: lịch lưu ra file đã bỏ (file nằm trên server dùng chung, không phân quyền theo người dùng; muốn file thì xuất từ dataset) — lịch file đã tạo trước đây vẫn chạy | Trung bình | Đạt |
 | FR-CR-19 | Xem dữ liệu đã lưu, xuất và tải file kết quả | Trung bình | Đạt |
 | FR-CR-20 | Console log tiến trình từng URL; báo lỗi rõ ràng cho người dùng (không lỗi 502 trống) | Trung bình | Đạt |
 | FR-CR-21 | Lưu ý website có thể chặn tự động (CAPTCHA, WAF, giới hạn IP...); hệ thống không cố vượt qua | Trung bình | Đạt |
 | FR-CR-22 | Hai chế độ trích xuất cho trang dài chia nhiều đoạn, người dùng tự tick ở Bước 3: **Chậm** (mặc định, gọi AI tuần tự) và **Nhanh (tốn)** (gọi các đoạn đồng thời; không đổi số lượt gọi/chi phí AI, chỉ tăng tải đồng thời) | Trung bình | Đạt (đã đo thật: cùng 2 đoạn/60 bản ghi, Chậm 115 giây, Nhanh 47 giây) |
-| FR-CR-23 | Giới hạn tốc độ gọi AI theo từng model (`AI_MODEL_LIMITS`): tự chờ (delay) để không vượt request/phút, header của API ghi đè cấu hình, gặp 429 thì chờ đúng `Retry-After` rồi thử lại | Cao | Đạt (đã đo hạn mức thật: qwen 2, GLM 5 request/phút; kiểm tra 429 thật) |
+| FR-CR-23 | Giới hạn tốc độ gọi AI theo từng model (`AI_MODEL_LIMITS`): tự chờ (delay) để không vượt request/phút, header của API ghi đè cấu hình, gặp 429 thì chờ đúng `Retry-After` rồi thử lại | Cao | Đạt (đã đo hạn mức thật: GLM-5.3-flash 5, qwen 2 request/phút; kiểm tra 429 thật) |
 | FR-CR-24 | Tiến độ Crawl tách hai thanh: ① CODE (tải, làm sạch) và ② AI (từng đoạn, đang chờ hạn mức, thử lại, đoạn lỗi), cho biết đang chạy code hay model AI | Trung bình | Đạt |
-| FR-CR-25 | Mỗi đoạn AI thử lại 1 lần khi lỗi, timeout tăng theo kích thước đoạn (đo thật: 60 bản ghi/đoạn đầy ~101 giây); một đoạn lỗi không làm hỏng cả trang; trang bị cắt bớt được báo rõ | Cao | Đạt |
+| FR-CR-25 | Mỗi đoạn AI thử lại 1 lần khi lỗi, timeout tăng theo kích thước đoạn và **số dòng bản ghi** (đo thật: 60 bản ghi/đoạn đầy ~101 giây; bảng 25 dòng chỉ 2,6 nghìn ký tự vẫn ~57 giây); một đoạn lỗi không làm hỏng cả trang; trang bị cắt bớt được báo rõ | Cao | Đạt |
+| FR-CR-26 | **Nguồn là API (JSON)**: người dùng tick "Nguồn là API" và dán link API vào ô URL; hệ thống tải bằng HTTP (GET), tự tìm mảng bản ghi trong JSON, ghép tên field (hoặc mô tả) với khóa JSON, **không gọi AI**; báo rõ field không ghép được kèm danh sách khóa; chặn địa chỉ nội bộ; chưa hỗ trợ đặt lịch cho nguồn API | Cao | Đạt (đã chạy thật trên API công khai: 100 và 10 bản ghi, không gọi AI) |
 
 ### 5.2 Automation (Local Runner)
 
@@ -152,7 +153,7 @@
 | NFR-PERF-02 | Trang lớn được chia đoạn ≤ 8000 ký tự khi gọi AI | Đạt |
 | NFR-PERF-03 | Hạn mức AI: mỗi model có bộ đếm request/phút riêng (đo 2026-09-20: qwen3.6-flash 2, glm-5.3-flash 5, glm-5.2-hackathon 5, deepseek-v4-pro 5; Gemma chưa báo header, BTC cho biết 10); hệ thống xếp hàng thay vì nhận 429 | Đạt |
 | NFR-USA-01 | Giao diện tiếng Việt, ba trang thống nhất (Crawl, Automation, Admin), logo MSB | Đạt |
-| NFR-QUA-01 | Bộ test tự động: 676 test đạt (unit, API, UI) | Đạt |
+| NFR-QUA-01 | Bộ test tự động: 696 test đạt (unit, API, UI) | Đạt |
 
 ## 7. Kiến trúc và dữ liệu
 
@@ -201,7 +202,7 @@ Luồng xử lý mỗi URL: kiểm tra robots.txt → tải trang → làm sạc
 | Giả định | Người dùng có quyền hợp pháp với dữ liệu họ thu thập; máy chạy agent truy cập được trang cần test |
 | Rủi ro | **Website chặn tự động** (CAPTCHA, WAF, chặn IP đám mây, OTP/2FA) → lượt kéo lỗi hoặc rỗng; hệ thống không né |
 | Rủi ro | **Chất lượng model AI** (JSON không sạch, chế độ thinking làm chậm) → cần đo trước khi dùng thật |
-| Rủi ro | **Hạn mức request/phút thấp** (qwen 2/phút, dùng chung cho crawl, phản hồi AI và Runner AI cùng một key) → nhiều người crawl cùng lúc sẽ phải xếp hàng (thanh tiến độ báo "chờ hạn mức"); giảm nhẹ bằng chọn model có hạn mức cao hơn (GLM 5/phút, nhanh hơn ~2,2 lần trong bài đo) sau khi kiểm tra chất lượng trên trang thật, hoặc xin BTC nâng hạn mức |
+| Rủi ro | **Hạn mức request/phút thấp** (model đang dùng GLM-5.3-flash: 5/phút; qwen chỉ 2/phút; dùng chung cho crawl, phản hồi AI và Runner AI cùng một key) → nhiều người crawl cùng lúc sẽ phải xếp hàng (thanh tiến độ báo "chờ hạn mức"); đã chuyển từ qwen sang GLM-5.3-flash theo khuyến nghị của BTC (nhanh hơn ~2,2 lần trong bài đo); còn phải kiểm tra chất lượng GLM trên trang thật, hoặc xin BTC nâng hạn mức |
 | Rủi ro | **DB mở Public, chưa có SSL** trong giai đoạn thi → dùng mật khẩu mạnh; tắt Public hoặc chuyển VPC sau khi xong |
 | Rủi ro | **Chi phí runtime** tính vào ví thật, chạy liên tục → dừng runtime cũ/thừa khi không dùng |
 | Rủi ro | Người dùng Automation phải cài Python trên máy → có hướng dẫn trên trang; kế hoạch đóng gói |
@@ -227,7 +228,7 @@ Luồng xử lý mỗi URL: kiểm tra robots.txt → tải trang → làm sạc
 
 **Đã hoàn thành:** toàn bộ chức năng ở mục 5 ở mức "Đạt/Đạt (offline)"; triển khai UI + API lên GreenNode; Runner đã kiểm chứng trên Postgres thật; CI có cổng kiểm thử.
 
-**Việc còn lại:** đo chất lượng trích xuất với model AI thật (Qwen3.6-Flash, GLM-5.2); UAT Automation với trang và trình duyệt thật; đóng gói agent cho người không cài Python;
+**Việc còn lại:** đo chất lượng trích xuất với model AI thật (GLM-5.3-flash, Gemma); UAT Automation với trang và trình duyệt thật; đóng gói agent cho người không cài Python;
 tắt DB Public/bật SSL; dọn runtime thừa.
 
 **Hướng phát triển:** chọn phần tử trực quan (visual selector), Data Lineage, chạy testcase không giao diện trên server (chỉ với trang công khai), tự động deploy có kiểm soát.

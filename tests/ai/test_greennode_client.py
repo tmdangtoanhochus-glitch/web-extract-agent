@@ -676,3 +676,19 @@ def test_parallel_mode_respects_the_limit_instead_of_firing_everything_at_once()
     stamps.sort()
     for i in range(len(stamps) - 2):
         assert stamps[i + 2] - stamps[i] >= 0.35
+
+
+def test_timeout_scales_with_record_rows_for_dense_short_table():
+    """Trang bảng dày: ít ký tự nhưng nhiều bản ghi (vietnambiz 2.6k ký tự = 25 bản ghi, model ~57s)."""
+    client = GreenNodeChatClient(base_url=_BASE_URL, api_key="k", model="openai/gpt-4o", timeout_seconds=30.0)
+    table = "| a | b |\n| --- | --- |\n" + "".join(f"| x{i} | {i} |\n" for i in range(25))
+    assert len(table) < 800
+    first = client._timeout_for(table, attempt=1)
+    assert first >= 15 + 4 * 25  # đủ dư cho ~57s đo thật, có biên an toàn
+    assert client._timeout_for(table, attempt=2) == first * 1.5
+
+
+def test_row_timeout_is_capped():
+    client = GreenNodeChatClient(base_url=_BASE_URL, api_key="k", model="openai/gpt-4o", timeout_seconds=30.0)
+    many = "".join(f"- m{i}\n" for i in range(1000))
+    assert client._timeout_for(many, attempt=1) == 240.0

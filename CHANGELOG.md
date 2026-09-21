@@ -1,5 +1,22 @@
 # Changelog
 
+## Nguồn API (JSON) + bỏ lịch lưu file + sửa hướng dẫn kiểm thử — 2026-09-21
+- **Nguồn là API (JSON)**: ô tick ở Bước 1 (`api_source`). Dán link API vào ô URL; tải bằng httpx (không leo thang Playwright), tự tìm mảng bản ghi, ghép field theo tên hoặc mô tả với khóa JSON (bỏ dấu/hoa thường, khóa lồng `a.b`), **không gọi AI**, confidence 1.0, evidence `api:<khóa>`. Lỗi ghép field liệt kê các khóa có sẵn. Chặn `localhost`/IP nội bộ/`.internal`; tối đa 10 triệu ký tự. Module mới `src/api_source.py`; tham số `api_source` chạy xuyên `/crawl`, job nền, kéo nhiều lượt. Đã chạy thật trên jsonplaceholder (100 bản ghi) và dummyjson (10 bản ghi). Chưa hỗ trợ POST và lịch cho nguồn API.
+- **Bỏ lịch lưu file** (đề xuất của Kiên): `POST /schedules` với `storage_mode=file` trả 400; UI Bước 5 chỉ còn lưu DB. Phần thực thi lịch file được giữ để lịch đã tạo trước đây vẫn chạy. Lưu file khi crawl thủ công giữ nguyên (file nằm trên server, tải về qua trình duyệt).
+- `docs/samples/Sample_Inputs.xlsx`: workbook mẫu chạy được với trang công khai the-internet.herokuapp.com/inputs (TC01 PASS, TC02 FAIL có chủ đích); đã chạy thật bằng `docs/runner.py` và qua preflight.
+- TEST_GUIDE: thêm trang mẫu API/bảng/Automation, ca TC-CR-13, TC-CR-23, TC-CR-50..55, viết lại phần Automation (TC-AU-01..13) giải thích từng chức năng.
+
+
+## Gộp kien-v2 của Kiên, sửa timeout bảng dày, export Excel runner — 2026-09-21
+- Gộp `origin/kien-v2` (commit fallback 3 `document.body.innerText` của Kiên) vào bản hiện tại; xung đột `playwright_fetcher.py` xử lý giữ bản mới + thêm fallback 3.
+- **Timeout AI theo số dòng bản ghi**: trang bảng ngắn nhưng dày (data.vietnambiz.vn/macro-economic: 2.643 ký tự, 25 bản ghi, model ~57s, có lần >90s) từng timeout vì công thức chỉ theo độ dài. Thêm `max(công thức cũ, 15 + 4s × số dòng)` tối đa 240s (`_count_record_rows`).
+- Gợi ý `{page}` đặt được trong đường dẫn (`https://bonbanh.com/oto/page,{page}`), thông báo lỗi thiếu `{page}` có ví dụ.
+- Khung "Automation là gì?" viết lại theo hướng kỹ thuật (workbook steps/testcases, agent claim/heartbeat/journal, executor Playwright, ranh giới bảo mật).
+- `docs/runner.py` `export_results_excel`: row `read_result_single` không còn thành block b1/b2 thừa; `overall` vẫn tính cả row single (giữ UNVERIFIED); `expected_*` được strip khoảng trắng. Không dùng nguyên `runner_debug_fixed.py` vì nó dựa trên bản runner cũ (có `eval`, không có redaction/scoped locator).
+
+## Đổi model AI mặc định sang GLM-5.3-flash — 2026-09-21
+BTC đề nghị hạn chế qwen3.6-flash. Đổi `AI_MODEL=z-ai/glm-5.3-flash-thirdparty` trong `deploy/runtime-api.env` (chỉ đổi cấu hình, không build lại image); hạn mức 5 request/phút đã có sẵn trong `AI_MODEL_LIMITS`. Cần kiểm tra chất lượng trích xuất trên trang thật.
+
 ## Hạn mức AI theo model + tiến độ Crawl tách ①CODE / ②AI — 2026-09-20
 **Bối cảnh (đo thật trên key của dự án):** GreenNode đặt hạn mức request/phút RIÊNG cho từng model — qwen3.6-flash **2**,
 glm-5.3-flash / glm-5.2-hackathon / deepseek-v4-pro **5**; token 1 triệu/phút, 100 triệu/ngày (không phải nút thắt). Vượt hạn

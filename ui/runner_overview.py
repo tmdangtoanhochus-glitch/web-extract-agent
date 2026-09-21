@@ -1,4 +1,4 @@
-"""Khung "Automation là gì và dùng thế nào" — giải thích ngắn gọn cho người dùng mới, hiện sau khi đăng nhập."""
+"""Khung "Automation là gì và dùng thế nào" — mô tả kỹ thuật cho người dùng mới, hiện sau khi đăng nhập."""
 from __future__ import annotations
 
 import streamlit as st
@@ -15,35 +15,42 @@ def render(expanded: bool = True) -> None:
     with st.expander("📘 Automation là gì? Dùng như thế nào?", expanded=expanded):
         st.markdown(
             """
-**Automation giúp bạn kiểm thử tự động một trang web**: ví dụ đăng nhập, tìm khách hàng, đọc số tiền, rồi so với kết quả mong đợi.
-Mọi thao tác trên trình duyệt chạy **trên máy của bạn**; trang web này chỉ dùng để soạn, giao việc và xem tóm tắt kết quả.
+**Automation là bộ chạy kiểm thử giao diện (UI test) theo dữ liệu**: mô tả flow bằng workbook `.xlsx`, agent cục bộ chạy
+Playwright trên trình duyệt thật của máy bạn, so giá trị đọc được với `expected_*` và ghi PASS / FAIL / UNVERIFIED cho từng ca.
+Server chỉ soạn workbook, điều phối và lưu tóm tắt; **thao tác trình duyệt và thông tin đăng nhập không đi qua server**.
 
-Hình dung như một nhà hàng nhỏ:
-- **File Excel (workbook)** là *công thức nấu ăn*: sheet `steps` liệt kê các bước (mở trang, nhập, bấm, đọc), sheet `testcases` liệt kê các ca cần thử và kết quả mong đợi.
-- **Agent** là *đầu bếp* chạy trong máy bạn: thao tác trên trình duyệt thật theo công thức.
-- **Trang web này** là *quầy nhận đơn*: bạn soạn công thức, giao việc cho đầu bếp và xem kết quả tổng hợp.
-- **File `runner.env`** là *chìa khóa két* của trang được test (user/pass): nằm trong máy bạn, không bao giờ tải lên server.
+**Kiến trúc**
+- **Workbook** gồm sheet `steps` (mỗi dòng: `screen`, `step`, `action`, `locator_type`, `locator`, `value_source`, `wait_selector`,
+  `read_method`, `group`…) và sheet `testcases` (`tc_id`, `mo_ta`, `active`, cột dữ liệu theo từng `step` và cột `expected_*`).
+  `action` thuộc tập cố định: `fill`, `click`, `select_antd`, `radio`, `upload`, `wait`, `read_result*`…; `locator` là CSS selector.
+- **Agent** (`local_runner_agent.py`) là tiến trình trên máy bạn: xác thực bằng **Bearer token một lần**, gọi `POST /claim` để nhận run,
+  gửi heartbeat khi đang chạy, ghi journal cục bộ để không chạy lại run sau khi crash, rồi gửi lại **chỉ metadata kết quả** (số ca PASS/FAIL/lỗi, thời gian).
+- **Executor** chạy Playwright (Chrome / Edge / Firefox), thực thi từng `step` theo `testcase`, đọc kết quả bằng `read_method`
+  (`css_input`, `label_input`, `sibling_span`…), so **chính xác** với `expected_*`, chụp ảnh khi lỗi (`screenshot_on_error`).
+  Nhóm bản ghi lặp dùng cột `group` và các cột `expected_<field>_<n>`.
+- **`runner.env`** giữ `PREFIX_USERNAME` / `PREFIX_PASSWORD` của hệ thống được test, chỉ nằm trên máy bạn; workbook tham chiếu bằng `value_source=account`.
+- **AI (server)** chỉ sinh hoặc sửa `steps` theo schema đóng (validator từ chối field lạ, `locator` chỉ được là placeholder để bạn điền/repair);
+  không nhận mật khẩu, không nhận dữ liệu trên trang, không tự đặt `testcases` hay kết quả mong đợi.
 
-**Các tab bên dưới dùng để làm gì**
+**Các tab**
 
-| Tab | Việc bạn làm | Chạy ở đâu |
+| Tab | Chức năng kỹ thuật | Chạy ở đâu |
 |---|---|---|
-| **Describe** | Kể bằng lời flow cần test; AI viết file Excel **nháp** (sheet `steps` + khung `testcases`). Bạn tự điền các ca test. | Web (AI ở server) |
-| **Record local** | Tự thao tác thật trên trang; hệ thống ghi lại. Tải file ghi lên để AI chuẩn hóa thành Excel đúng chuẩn. | Máy bạn, rồi web |
-| **Inspector local** | Kiểm tra các phần tử trên trang (nút, ô nhập) còn tìm thấy không, và nhờ AI sửa khi trang đổi giao diện. | Máy bạn, rồi web |
-| **Agent** | Đăng ký "đầu bếp": tạo agent, nhận **token một lần**, dán vào chương trình `local_runner_agent.py` trên máy. | Web + máy bạn |
-| **Chạy testcase** | Giao việc: chọn agent và file Excel rồi bấm chạy; agent trên máy bạn nhận việc và thực hiện. | Web giao, máy bạn chạy |
-| **Lịch sử & kết quả** | Xem tóm tắt từng lần chạy: bao nhiêu ca PASS/FAIL/lỗi, thời gian. File chi tiết và ảnh chụp nằm trong máy bạn. | Web |
-| **Thông báo** | Nhắc khi báo cáo sắp bị xóa (lưu trên server tối đa 7 ngày). | Web |
+| **Describe** | Mô tả flow bằng văn bản → AI sinh sheet `steps` nháp đúng schema, khung `testcases` suy ra từ `steps`. | Server (AI) |
+| **Record local** | Recorder (`recorder.js`) ghi thao tác và selector thật trên trang; upload bản ghi để AI chuẩn hóa thành `steps`. | Máy bạn → server |
+| **Inspector local** | `inspect_runner.py` kiểm tra từng `locator` còn khớp đúng 1 phần tử hiển thị không; `repair_runner.py` cho bạn rê chuột chọn phần tử thay thế (Ctrl+Alt+L) rồi xuất bản sao đã đổi locator; `try_step_runner.py` chạy thử 1 step thật có xác nhận. | Máy bạn (báo cáo chỉ là metadata) |
+| **Agent** | Tạo agent, nhận token một lần để cấu hình `local_runner_agent.py`. | Server + máy bạn |
+| **Chạy testcase** | Tạo run (agent + workbook); agent claim và thực thi. | Server giao, máy bạn chạy |
+| **Lịch sử & kết quả** | Tổng hợp trạng thái từng run: PASS / FAIL / ERROR, thời gian. Báo cáo chi tiết và ảnh nằm ở `data/local-runner` trên máy bạn. | Server |
+| **Thông báo** | Nhắc khi báo cáo sắp hết hạn (lưu tối đa 7 ngày). | Server |
 
-**Luồng thường dùng**
-1. **Soạn:** dùng *Describe* (kể bằng lời) hoặc *Record local* (thao tác thật) để có file Excel.
-2. **Kiểm tra:** chạy *Inspector local* cho chắc các phần tử vẫn còn.
-3. **Giao việc:** mở agent trên máy (xem phần cài môi trường bên dưới), rồi ở tab *Chạy testcase* chọn agent và file.
-4. **Xem kết quả:** tóm tắt ở *Lịch sử & kết quả*; chi tiết trong thư mục `data/local-runner` trên máy bạn.
+**Quy trình**
+1. Tạo workbook bằng *Describe* hoặc *Record local*, điền các dòng `testcases` (giá trị nhập và `expected_*`).
+2. *Inspector local*: xác nhận các `locator` còn khớp; sửa những locator hỏng.
+3. Chạy agent trên máy (cài Python theo phần hướng dẫn bên dưới), cấu hình `runner.env` và token.
+4. *Chạy testcase*: chọn agent + workbook → xem PASS/FAIL ở *Lịch sử & kết quả*; đối chiếu chi tiết trong file kết quả cục bộ.
 
-**Lưu ý:** không có tab nào mở trình duyệt trên server — trình duyệt hiện ra khi bạn bấm Record hay Chạy testcase chính là trình duyệt trên máy bạn.
-AI chỉ nhận **cấu trúc** (tên bước, vị trí phần tử), không nhận mật khẩu hay dữ liệu trên trang.
+**Ranh giới bảo mật:** server không mở trình duyệt; mọi phiên Playwright chạy trên máy bạn. `runner.env`, cookie và dữ liệu trang không được tải lên.
             """
         )
     blocking_notice()  # luôn hiện, không nằm trong khung thu gọn

@@ -154,3 +154,10 @@ def test_existing_sqlite_jobs_migrate_without_losing_data(tmp_path):
     migrated = SQLiteStorage(path)
     restored = migrated.get_scheduled_job(job.job_id)
     assert restored.url == "https://example.test" and restored.crawl_options is None
+
+
+def test_page_placeholder_works_inside_path_segment_like_bonbanh():
+    """{page} không bắt buộc là query string: website đặt số trang trong đường dẫn (page,2)."""
+    config = CrawlOptions(mode="fields", pages=3, page_start=1)
+    urls = [u for u, _, _ in plan_urls("https://bonbanh.com/oto/page,{page}", config)]
+    assert urls == ["https://bonbanh.com/oto/page,1", "https://bonbanh.com/oto/page,2", "https://bonbanh.com/oto/page,3"]

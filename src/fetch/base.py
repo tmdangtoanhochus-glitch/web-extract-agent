@@ -120,6 +120,11 @@ class HybridFetcher(FetchEngine):
             return self._fallback.fetch(url)
         return result
 
+    @property
+    def static_engine(self) -> FetchEngine:
+        """Engine tĩnh (httpx) — dùng cho nguồn API JSON, không cần render."""
+        return self._primary
+
     def with_request_cookie(self, url: str, cookie: str) -> "HybridFetcher":
         clone = HybridFetcher(self._primary, self._fallback, self._min_html, self._min_markdown_ratio)
         if hasattr(self._primary, "with_request_cookie"):

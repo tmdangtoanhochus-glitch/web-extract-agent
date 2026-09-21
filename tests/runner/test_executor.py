@@ -67,3 +67,22 @@ def test_export_redacts_registered_values(tmp_path):
     wb = load_workbook(target)
     assert "synthetic-sensitive" not in str(list(wb.active.values))
     wb.close()
+
+
+def test_export_excel_single_rows_do_not_create_extra_blocks(tmp_path):
+    """Row read_result_single không có key "block": không được thành b1/b2 (block chấm điểm thừa)."""
+    from openpyxl import load_workbook
+    group = lambda i, ok: {"tc_id": "TC1", "mo_ta": "m", "id_ho_so": "H", "overall": "PASS" if ok else "FAIL",
+                           "block": i, "exp_gia": "1", "real_gia": "1", "pass_gia": "PASS" if ok else "FAIL"}
+    single = {"tc_id": "TC1", "mo_ta": "m", "id_ho_so": "H", "overall": "PASS",
+              "exp_tong": "9", "real_tong": "9", "pass_tong": "PASS"}
+    out = tmp_path / "r.xlsx"
+    runner.export_results_excel([group(0, True), group(1, True), single], str(out))
+    headers = [c.value for c in next(load_workbook(out)["results"].iter_rows(min_row=1, max_row=1))]
+    assert not any(h.startswith("b2_") for h in headers)
+    assert any(h.startswith("b1_") for h in headers) and not any("tong" in h for h in headers)
+    # overall vẫn tính cả row single
+    failed = [group(0, True), group(1, True), {**single, "overall": "FAIL"}]
+    runner.export_results_excel(failed, str(out))
+    ws = load_workbook(out)["results"]
+    assert [c.value for c in ws[2]][3] == "FAIL"

@@ -39,6 +39,7 @@ from ..ai.rate_limiter import ModelRateLimiter
 from ..config import load_settings
 from ..fetch.base import FetchEngine, HybridFetcher, domain_of
 from ..fetch.httpx_fetcher import HttpxFetcher
+from ..api_source import ApiSourceError, assert_public_url
 from ..pipeline import run_crawl_job, run_file_crawl_job
 from ..scheduler import CrawlScheduler, validate_trigger
 from ..storage.base import StorageEngine
@@ -76,6 +77,9 @@ class CrawlRequest(BaseModel):
     # thời gian chờ nhưng tăng tải đồng thời lên AI/container (không đổi số lượt
     # gọi/chi phí AI so với tuần tự — xem AIClient.extract()).
     parallel_extract: bool = False
+    # Nguồn là API JSON (người dùng tick ở Bước 1, URL là link API): tải bằng HTTP thuần, ghép field với khóa JSON
+    # bằng code, KHÔNG gọi AI — xem src/api_source.py.
+    api_source: bool = False
     # UI sinh 32 ký tự hex để hỏi tiến độ (`GET /crawl-progress/{id}`) trong lúc /crawl còn chạy — chỉ chứa nhãn giai
     # đoạn + số đếm, xem src/progress.py. Không thuộc cấu hình crawl nên loại khỏi config_fingerprint.
     progress_id: Optional[str] = Field(default=None, pattern=r"^[0-9a-f]{32}$")
@@ -254,6 +258,7 @@ def create_app(
                 image_fields=req.image_fields,
                 parallel_extract=req.parallel_extract,
                 on_progress=on_progress,
+                api_source=req.api_source,
             )
             if file_result.status in ("fetch_failed", "extract_failed"):
                 _log_manual_crawl_failure(storage, req.url, file_result.status, file_result.detail)
@@ -287,6 +292,7 @@ def create_app(
             image_fields=req.image_fields,
             parallel_extract=req.parallel_extract,
             on_progress=on_progress,
+            api_source=req.api_source,
         )
 
         if result.status == "dataset_not_found":
@@ -445,6 +451,13 @@ def create_app(
                     raise HTTPException(400, "Fetcher không hỗ trợ bỏ qua robots.txt theo request")
                 logger.warning("Người dùng yêu cầu BỎ QUA robots.txt cho %s. Lý do: %s", req.url, reason)
                 request_fetcher = request_fetcher.with_robots_ignored(domain_of(req.url), reason)
+            if req.api_source:
+                try:
+                    assert_public_url(req.url)
+                except ApiSourceError as exc:
+                    raise HTTPException(400, str(exc)) from None
+                # API JSON không cần trình duyệt: dùng httpx, tránh HybridFetcher leo thang sang Playwright.
+                request_fetcher = getattr(request_fetcher, "static_engine", request_fetcher)
             if req.crawl_options:
                 if not req.field_descriptions or req.storage_mode not in {"db", "file"}:
                     raise HTTPException(400, "Fields and valid storage mode required")
@@ -462,7 +475,7 @@ def create_app(
                             file_path=req.file_path, write_mode=req.write_mode or "append", image_fields=req.image_fields,
                             confidence_threshold=confidence_threshold, retry_indices=retry_indices,
                             checkpoint=checkpoint, progress=progress, parallel_extract=req.parallel_extract,
-                            on_progress=on_progress)
+                            on_progress=on_progress, api_source=req.api_source)
                 except ValueError as exc:
                     raise HTTPException(400, str(exc)) from None
             else:
@@ -534,23 +547,10 @@ def create_app(
                 raise HTTPException(400, "Invalid bulk schedule configuration")
         if req.storage_mode not in ("db", "file"):
             raise HTTPException(status_code=400, detail="storage_mode phải là 'db' hoặc 'file'")
-
         if req.storage_mode == "file":
-            _validate_file_storage_config(req.file_path, req.write_mode, req.key_field, req.field_descriptions)
-            job = crawl_scheduler.add_job(
-                dataset_id=None,
-                url=req.url,
-                field_descriptions=req.field_descriptions,
-                trigger_type=req.trigger_type,
-                trigger_args=req.trigger_args,
-                storage_mode="file",
-                file_path=req.file_path,
-                write_mode=req.write_mode,
-                key_field=req.key_field,
-                image_fields=req.image_fields,
-                crawl_options=req.crawl_options.model_dump(mode="json") if req.crawl_options else None,
-            )
-            return dataclasses.asdict(job)
+            # Lịch lưu file đã bỏ (file nằm trên server dùng chung, không phân quyền theo người dùng);
+            # lịch cũ đã tạo vẫn chạy bình thường qua scheduler.
+            raise HTTPException(status_code=400, detail="Lịch không còn hỗ trợ lưu ra file; hãy lưu vào dataset rồi xuất file ở Bước 4")
 
         if not req.dataset_id:
             raise HTTPException(status_code=422, detail="cần dataset_id khi storage_mode='db'")

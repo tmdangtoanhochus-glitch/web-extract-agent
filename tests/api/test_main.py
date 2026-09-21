@@ -548,8 +548,8 @@ def test_download_export_path_traversal_returns_400(client):
     assert response.status_code in (400, 404)  # tuỳ cách FastAPI/starlette chuẩn hoá path
 
 
-# ---- storage_mode="file" cho /schedules ------------------------------------
-def test_create_schedule_file_mode_does_not_require_dataset(client):
+# ---- storage_mode="file" cho /schedules đã bị chặn tạo mới -------------------
+def test_create_schedule_file_mode_is_rejected(client):
     response = client.post(
         "/schedules",
         json={
@@ -563,11 +563,9 @@ def test_create_schedule_file_mode_does_not_require_dataset(client):
         },
     )
 
-    assert response.status_code == 200
-    body = response.json()
-    assert body["dataset_id"] is None
-    assert body["storage_mode"] == "file"
-    assert body["file_path"] == "scheduled_gold.json"
+    assert response.status_code == 400
+    assert "không còn hỗ trợ" in response.json()["detail"]
+    assert client.get("/schedules").json() == []
 
 
 def test_create_schedule_db_mode_without_dataset_id_returns_422(client):

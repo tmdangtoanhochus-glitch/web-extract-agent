@@ -30,6 +30,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from .ai.base import AIClient, FieldExtraction
+from .api_source import ApiSourceError, extract_api_records
 from .clean.html_cleaner import clean_html
 from .extract.selector_finder import apply_selector, find_selector
 from .extract.structured_data import extract_structured_data, match_field
@@ -90,13 +91,18 @@ _PROGRESS_RESET = {
 }
 
 
-def fetch_and_clean(url: str, fetcher: FetchEngine, on_progress: Optional[ProgressCallback] = None) -> FetchAndClean:
+def fetch_and_clean(
+    url: str, fetcher: FetchEngine, on_progress: Optional[ProgressCallback] = None, api_source: bool = False
+) -> FetchAndClean:
     """Fetch 1 URL và làm sạch HTML nếu thành công. `fetch_result.success`
     quyết định có tiếp tục được không — tầng gọi tự kiểm tra trước khi dùng
     `markdown`/`content_hash` (rỗng nếu fetch thất bại).
 
     `on_progress`: báo giai đoạn cho UI — "fetch" (đang tải trang, code chạy) → "clean" (đang làm sạch, code chạy)
-    → "cleaned" (xong, kèm số ký tự markdown sẽ gửi AI)."""
+    → "cleaned" (xong, kèm số ký tự markdown sẽ gửi AI).
+
+    `api_source`: nguồn là API JSON — không làm sạch HTML, `markdown` giữ nguyên thân JSON
+    và `content_hash` tính trên thân đó (để phát hiện dữ liệu đổi)."""
     safe_emit(on_progress, {**_PROGRESS_RESET, "phase": "fetch"})
     logger.info("[%s] Bắt đầu fetch...", url)
     fetch_result = fetcher.fetch(url)
@@ -108,6 +114,12 @@ def fetch_and_clean(url: str, fetcher: FetchEngine, on_progress: Optional[Progre
         "[%s] Fetch thành công (status=%s, %d bytes HTML) — đang làm sạch...",
         url, fetch_result.status_code, len(fetch_result.html),
     )
+    if api_source:
+        body = fetch_result.html
+        safe_emit(on_progress, {"phase": "cleaned", "markdown_chars": 0})
+        return FetchAndClean(
+            fetch_result=fetch_result, markdown=body, content_hash=hashlib.sha256(body.encode("utf-8")).hexdigest()
+        )
     safe_emit(on_progress, {"phase": "clean"})
     cleaned = clean_html(fetch_result.html, base_url=fetch_result.final_url or url)
     content_hash = hashlib.sha256(cleaned.markdown.encode("utf-8")).hexdigest()
@@ -128,6 +140,7 @@ def ai_extract(
     storage: StorageEngine,
     parallel_extract: bool = False,
     on_progress: Optional[ProgressCallback] = None,
+    api_source: bool = False,
 ) -> AiExtractResult:
     """Trích xuất field theo thứ tự ưu tiên: structured data (JSON-LD/Open
     Graph, CLAUDE.md mục 2) → cache chiến lược theo domain (CLAUDE.md mục 5)
@@ -139,6 +152,13 @@ def ai_extract(
     `parallel_extract`: người dùng tự tick chọn ở Bước 3 (mặc định tắt) — chỉ có
     tác dụng khi trang dài bị chia nhiều đoạn, xem `AIClient.extract()`."""
     logger.info("[%s] Bắt đầu trích xuất %d field: %s", url, len(field_descriptions), list(field_descriptions))
+    if api_source:
+        # Nguồn API JSON: ghép field với khóa JSON bằng code, KHÔNG gọi AI.
+        safe_emit(on_progress, {"phase": "ai_skipped", "ai_skipped": True})
+        try:
+            return AiExtractResult(records=extract_api_records(html, field_descriptions))
+        except ApiSourceError as exc:
+            return AiExtractResult(success=False, error=str(exc))
     structured = extract_structured_data(html)
     domain = domain_of(url)
     resolved_fields: dict[str, FieldExtraction] = {}
@@ -260,6 +280,7 @@ def run_crawl_job(
     images_root: Path = IMAGES_ROOT,
     parallel_extract: bool = False,
     on_progress: Optional[ProgressCallback] = None,
+    api_source: bool = False,
 ) -> PipelineResult:
     """Crawl 1 URL và lưu kết quả vào DB — có thể lưu NHIỀU record nếu trang
     có nhiều bản ghi (`extraction.records`, xem `ai_extract()`).
@@ -293,7 +314,7 @@ def run_crawl_job(
             raise ValueError("cần dataset_name khi không truyền dataset_id")
         dataset = storage.create_dataset(dataset_name, schema_signature)
 
-    fac = fetch_and_clean(url, fetcher, on_progress)
+    fac = fetch_and_clean(url, fetcher, on_progress, api_source)
     if not fac.fetch_result.success or fac.fetch_result.html is None:
         logger.info("Fetch thất bại cho %s: %s", url, fac.fetch_result.error)
         return PipelineResult(status="fetch_failed", dataset=dataset, detail=fac.fetch_result.error)
@@ -310,7 +331,7 @@ def run_crawl_job(
 
     extraction = ai_extract(
         url, fac.fetch_result.html, fac.markdown, field_descriptions, ai_client, storage,
-        parallel_extract=parallel_extract, on_progress=on_progress,
+        parallel_extract=parallel_extract, on_progress=on_progress, api_source=api_source,
     )
     if not extraction.success:
         return PipelineResult(status="extract_failed", dataset=dataset, detail=extraction.error)
@@ -366,6 +387,7 @@ def run_file_crawl_job(
     images_root: Path = IMAGES_ROOT,
     parallel_extract: bool = False,
     on_progress: Optional[ProgressCallback] = None,
+    api_source: bool = False,
 ) -> FileCrawlResult:
     """Crawl 1 URL và ghi kết quả ra file (`src/storage/file_writer.py`,
     JSON/CSV/XLSX/Parquet theo đuôi file) — KHÔNG dedup theo content_hash,
@@ -377,14 +399,14 @@ def run_file_crawl_job(
 
     `confidence_threshold`: giống `run_crawl_job()` — chỉ gắn cờ `needs_review`
     trong record ghi ra file, KHÔNG chặn ghi."""
-    fac = fetch_and_clean(url, fetcher, on_progress)
+    fac = fetch_and_clean(url, fetcher, on_progress, api_source)
     if not fac.fetch_result.success or fac.fetch_result.html is None:
         logger.info("Fetch thất bại cho %s: %s", url, fac.fetch_result.error)
         return FileCrawlResult(status="fetch_failed", detail=fac.fetch_result.error)
 
     extraction = ai_extract(
         url, fac.fetch_result.html, fac.markdown, field_descriptions, ai_client, storage,
-        parallel_extract=parallel_extract, on_progress=on_progress,
+        parallel_extract=parallel_extract, on_progress=on_progress, api_source=api_source,
     )
     if not extraction.success:
         return FileCrawlResult(status="extract_failed", detail=extraction.error)

@@ -1057,6 +1057,8 @@ def read_and_verify(page: Page, tc: dict, tc_id: str,
                 else tc.get(f"expected_{fn}", "")
             )
             expected = resolve_local_reference(expected)
+            # Ô Excel nhìn trống vẫn có thể chứa khoảng trắng/xuống dòng: strip trước khi quyết định có kiểm tra không.
+            expected = str(expected).strip()
             match_row = read_steps[read_steps["step"] == f"read_{fn}"]
             threshold = (
                 match_row.iloc[0].get("match_type", "").strip()
@@ -1090,7 +1092,7 @@ def read_and_verify(page: Page, tc: dict, tc_id: str,
             row["block"] = i
         for fn, actual in actual_values.items():
             exp_key = f"expected_{fn}_{i}" if mode == "group" else f"expected_{fn}"
-            row[f"exp_{fn}"]  = tc.get(exp_key, "")
+            row[f"exp_{fn}"]  = str(tc.get(exp_key, "")).strip()
             row[f"real_{fn}"] = actual
             row[f"pass_{fn}"] = field_results.get(fn, "N/A")
 
@@ -1187,11 +1189,19 @@ def export_results_excel(all_results: list, output_path: str):
             tc_order.append(tid)
         tc_map[tid].append(row)
 
-    n_blocks = max(len(b) for b in tc_map.values())
+    # Chỉ row có key "block" (read_result_group) mới là block. Row read_result_single
+    # KHÔNG được tính thành b1/b2/... — trước đây n_blocks = số row nên sinh block thừa.
+    group_rows = [row for row in all_results if "block" in row]
+    n_blocks = max(int(row["block"]) for row in group_rows) + 1 if group_rows else 0
+    if DEBUG:
+        for tid in tc_order:
+            rows = tc_map[tid]
+            tprint(f"  [DEBUG] Export {tid}: group_blocks={[x.get('block') for x in rows if 'block' in x]} | "
+                   f"single_rows={sum('block' not in x for x in rows)}")
 
     META_EXCLUDE = {"id_ho_so", "tc_id", "mo_ta", "block", "overall"}
     seen_fields  = []
-    for row in all_results:
+    for row in group_rows:
         for k in row:
             if k.startswith("real_") and k[5:] not in seen_fields and k[5:] not in META_EXCLUDE:
                 seen_fields.append(k[5:])
@@ -1232,15 +1242,18 @@ def export_results_excel(all_results: list, output_path: str):
     ws.row_dimensions[1].height = 28
 
     for r, tid in enumerate(tc_order, 2):
-        blocks  = tc_map[tid]
-        mo_ta   = next((b.get("mo_ta","") for b in blocks if b.get("mo_ta")), "")
-        id_hs   = blocks[0].get("id_ho_so","") if blocks else ""
-        overall = ("FAIL" if any(b.get("overall") == "FAIL" for b in blocks)
-                   else "UNVERIFIED" if any(b.get("overall") != "PASS" for b in blocks)
+        rows    = tc_map[tid]
+        # overall tính trên MỌI row (kể cả single) nhưng chỉ group row thành cột b{i}_*.
+        blocks  = sorted((x for x in rows if "block" in x), key=lambda x: int(x["block"]))
+        mo_ta   = next((b.get("mo_ta","") for b in rows if b.get("mo_ta")), "")
+        id_hs   = next((b.get("id_ho_so","") for b in rows if b.get("id_ho_so")), "")
+        overall = ("FAIL" if any(b.get("overall") == "FAIL" for b in rows)
+                   else "UNVERIFIED" if any(b.get("overall") != "PASS" for b in rows)
                    else "PASS")
 
         row_data = {"tc_id": tid, "mo_ta": mo_ta, "id_ho_so": id_hs, "overall": overall}
-        for i, block in enumerate(blocks):
+        for block in blocks:
+            i = int(block["block"])  # dùng chỉ số block thật, không enumerate
             for f in FIELDS:
                 row_data[f"b{i}_exp_{f}"]  = block.get(f"exp_{f}",  "")
                 row_data[f"b{i}_real_{f}"] = block.get(f"real_{f}", "")

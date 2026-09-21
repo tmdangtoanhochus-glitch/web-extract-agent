@@ -52,6 +52,8 @@ def options_controls(fields):
         return None
     st.caption("URL mẫu: https://example.com/history?from={start}&to={end}&page={page}. "
                "Tên tham số phải theo website nguồn; ngày thay vào dạng YYYY-MM-DD. "
+               "{page} đặt được ở BẤT KỲ vị trí nào trong URL, kể cả đường dẫn, "
+               "ví dụ https://bonbanh.com/oto/page,{page} (trang 1 dùng page,1 nếu website chấp nhận). "
                "Chỉ lấy được lịch sử mà nguồn còn cung cấp. Tối đa 100 lượt mỗi đợt.")
     mode = st.radio("Kiểu dữ liệu", ["Trường trên mỗi trang", "Bảng HTML"], horizontal=True)
     options = {"mode": "table" if mode == "Bảng HTML" else "fields"}

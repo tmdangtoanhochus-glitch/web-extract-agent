@@ -81,7 +81,7 @@ def plan_urls(url, options, today=None):
         end = today or datetime.now(timezone.utc).date()
         start = end - timedelta(days=options.lookback_days - 1)
     if options.pages > 1 and "{page}" not in url:
-        raise ValueError("Nhiều trang cần {page} trong URL")
+        raise ValueError("Nhiều trang cần {page} trong URL, ví dụ https://bonbanh.com/oto/page,{page} hoặc https://site.com/list?page={page}")
     if start and not any(p in url for p in ("{start}", "{end}")) and not (options.mode == "table" and options.date_field):
         raise ValueError("Khoảng ngày cần URL {start}/{end} hoặc cột ngày để lọc bảng")
     windows = [(start, end)]
@@ -176,7 +176,8 @@ def preview_bulk(*, url, options, field_descriptions, fetcher, storage_mode="db"
 def run_bulk(*, url, field_descriptions, options, fetcher, ai_client, storage,
              dataset_id=None, dataset_name=None, storage_mode="db", file_path=None,
              write_mode="append", key_field=None, confidence_threshold=0.7, image_fields=None,
-             retry_indices=None, checkpoint=None, progress=None, parallel_extract=False, on_progress=None):
+             retry_indices=None, checkpoint=None, progress=None, parallel_extract=False, on_progress=None,
+             api_source=False):
     plans = plan_urls(url, options)
     validate_options(field_descriptions, options, storage_mode, write_mode, image_fields)
     indexed_plans = list(enumerate(plans, 1))
@@ -238,7 +239,8 @@ def run_bulk(*, url, field_descriptions, options, fetcher, ai_client, storage,
             if options.mode == "fields":
                 common = dict(url=target, field_descriptions=field_descriptions, fetcher=fetcher,
                               ai_client=ai_client, storage=storage, confidence_threshold=confidence_threshold,
-                              image_fields=image_fields, parallel_extract=parallel_extract, on_progress=on_progress)
+                              image_fields=image_fields, parallel_extract=parallel_extract, on_progress=on_progress,
+                              api_source=api_source)
                 result = (run_crawl_job(**common, dataset_id=dataset_id) if dataset else
                           run_file_crawl_job(**common, file_path=file_path, write_mode="append"))
                 status = result.status

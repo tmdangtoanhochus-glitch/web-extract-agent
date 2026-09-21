@@ -73,6 +73,7 @@ def _init_state() -> None:
         "dataset_name": "",
         "selected_dataset_id": None,
         "urls": [],
+        "api_source_on": False,
         "fields": [{"name": "", "desc": "", "is_image": False}],
         "file_name": "",
         "file_format": "Excel (.xlsx)",
@@ -274,6 +275,14 @@ def _render_step1() -> None:
     if st.button("+ Thêm link") and new_url.strip():
         if new_url.strip() not in st.session_state.urls:
             st.session_state.urls.append(new_url.strip())
+    st.session_state.api_source_on = st.checkbox(
+        "Nguồn là API (JSON) — dán link API vào ô URL", value=st.session_state.api_source_on,
+        help="Không dùng AI: hệ thống tải JSON, tự tìm mảng bản ghi và ghép tên field bên dưới với khóa JSON "
+             "(đặt tên field trùng khóa, hoặc ghi khóa vào mô tả). Lấy link API: mở trang → F12 → tab Network → "
+             "lọc Fetch/XHR → chọn dòng trả dữ liệu → Copy URL. API cần đăng nhập thì dán cookie ở Bước 3.",
+    )
+    if st.session_state.api_source_on:
+        st.caption("Chế độ API: chỉ hỗ trợ GET, dùng `{page}` trong URL để kéo nhiều trang; chưa hỗ trợ đặt lịch.")
 
     blocking_notice()
 
@@ -494,7 +503,7 @@ def _render_step3() -> None:
             )
             body: dict[str, Any] = {
                 "url": url, "field_descriptions": field_descriptions, "image_fields": image_fields,
-                "parallel_extract": parallel_extract,
+                "parallel_extract": parallel_extract, "api_source": st.session_state.api_source_on,
             }
             if is_file_mode:
                 body["storage_mode"] = "file"
@@ -840,11 +849,11 @@ def _render_step5() -> None:
     )
 
     previous = st.session_state.get("last_crawl_config")
-    if previous and previous.get("crawl_options"):
+    if previous and previous.get("crawl_options") and previous.get("storage_mode", "db") == "db":
         with st.expander("Đặt lịch append từ đợt vừa kéo", expanded=True):
             st.caption("Dùng lại nguồn, ánh xạ cột và dataset của đợt vừa kéo. Khoảng ngày gần nhất tính theo UTC. "
                        "Lịch không giữ cookie của lượt kéo thủ công. Nếu nguồn bắt buộc đăng nhập, lịch này chưa hỗ trợ.")
-            st.write({key: previous.get(key) for key in ("url", "dataset_id", "file_path")})
+            st.write({key: previous.get(key) for key in ("url", "dataset_id")})
             lookback = st.number_input("Số ngày gần nhất mỗi lần chạy lịch", min_value=1, max_value=366, value=7)
             every = st.number_input("Chạy mỗi bao nhiêu giờ", min_value=1, max_value=720, value=24)
             if st.button("Tạo lịch append theo cấu hình này"):
@@ -856,8 +865,6 @@ def _render_step5() -> None:
                 body = {key: value for key, value in previous.items()
                         if key not in {"cookie_header", "cookie_origin", "dataset_name"}}
                 body.update(crawl_options=options, trigger_type="interval", trigger_args={"hours": every})
-                if body.get("storage_mode") == "file":
-                    body["write_mode"] = "append"
                 result = _api_post("/schedules", body)
                 if result and not result.get("_http_error"):
                     st.success("Đã tạo lịch append")
@@ -894,19 +901,15 @@ def _render_step5() -> None:
             st.divider()
 
     st.markdown("**Tạo lịch mới**")
-    schedule_storage_mode = st.radio(
-        "Nơi lưu kết quả của lịch", ["Lưu vào DB", "Lưu ra file"], horizontal=True, key="schedule_storage_mode",
-    )
-    is_schedule_file_mode = schedule_storage_mode == "Lưu ra file"
+    st.caption("Lịch chỉ lưu vào DB. Cần file thì xuất từ dataset ở Bước 4.")
 
     chosen_dataset = None
-    if not is_schedule_file_mode:
-        if not datasets:
-            st.info("Cần có ít nhất 1 dataset (chạy crawl thủ công ở Bước 1-3 trước) mới tạo được lịch lưu DB.")
-        else:
-            options = {f"{d['dataset_name']} ({d['dataset_id'][:8]})": d for d in datasets}
-            label = st.selectbox("Dataset", list(options.keys()), key="schedule_dataset_select")
-            chosen_dataset = options[label]
+    if not datasets:
+        st.info("Cần có ít nhất 1 dataset (chạy crawl thủ công ở Bước 1-3 trước) mới tạo được lịch.")
+    else:
+        options = {f"{d['dataset_name']} ({d['dataset_id'][:8]})": d for d in datasets}
+        label = st.selectbox("Dataset", list(options.keys()), key="schedule_dataset_select")
+        chosen_dataset = options[label]
 
     url = st.text_input(
         "URL cần cào theo lịch", key="schedule_url_input", placeholder="https://example.com/gia-vang"
@@ -920,36 +923,7 @@ def _render_step5() -> None:
     st.markdown("**Mô tả field**")
     field_descriptions: dict[str, str] = {}
     schedule_image_fields: list[str] = []
-    if is_schedule_file_mode:
-        # Luồng file không có dataset -> tự khai báo field tự do (giống Bước 2 khi tạo dataset mới).
-        if "schedule_fields" not in st.session_state:
-            st.session_state.schedule_fields = [{"name": "", "desc": "", "is_image": False}]
-        for idx, row in enumerate(st.session_state.schedule_fields):
-            row.setdefault("is_image", False)
-            c1, c2, c3, c4 = st.columns([3, 5, 1, 1])
-            row["name"] = c1.text_input("Tên field", value=row["name"], key=f"sched_fname_{idx}", placeholder="gia_ban")
-            row["desc"] = c2.text_input(
-                "Mô tả tự nhiên", value=row["desc"], key=f"sched_fdesc_{idx}", placeholder="Giá bán ra niêm yết"
-            )
-            row["is_image"] = c3.checkbox(
-                "Ảnh", value=row["is_image"], key=f"sched_fimg_{idx}",
-                help="Field này là URL ảnh — tải file về data/images/ thay vì chỉ lưu URL.",
-            )
-            if c4.button("🗑", key=f"sched_rmf_{idx}") and len(st.session_state.schedule_fields) > 1:
-                st.session_state.schedule_fields.pop(idx)
-                st.rerun()
-        if st.button("＋ Thêm field", key="sched_add_field"):
-            st.session_state.schedule_fields.append({"name": "", "desc": "", "is_image": False})
-            st.rerun()
-        field_descriptions = {
-            f["name"].strip(): f["desc"].strip()
-            for f in st.session_state.schedule_fields
-            if f["name"].strip() and f["desc"].strip()
-        }
-        schedule_image_fields = [
-            f["name"].strip() for f in st.session_state.schedule_fields if f.get("is_image") and f["name"].strip()
-        ]
-    elif chosen_dataset is not None:
+    if chosen_dataset is not None:
         st.caption("Dataset có sẵn yêu cầu đúng tên field theo schema hiện có.")
         for name in chosen_dataset["schema_signature"]:
             dc1, dc2 = st.columns([5, 1])
@@ -964,30 +938,6 @@ def _render_step5() -> None:
             )
             if is_image:
                 schedule_image_fields.append(name)
-
-    file_path, write_mode, key_field = "", "append", None
-    if is_schedule_file_mode:
-        st.markdown("**Cấu hình lưu file**")
-        sfc1, sfc2 = st.columns([3, 2])
-        with sfc1:
-            sched_file_name = st.text_input(
-                "Tên file", key="schedule_file_name", placeholder="VD: gia-vang"
-            )
-        with sfc2:
-            sched_file_format_label = st.selectbox(
-                "Định dạng", list(_FILE_FORMATS.keys()), key="schedule_file_format_select"
-            )
-        file_path = f"{sched_file_name.strip()}.{_FILE_FORMATS[sched_file_format_label]}"
-        write_mode_label = st.selectbox(
-            "Cách ghi", list(_WRITE_MODE_LABELS.keys()), key="schedule_write_mode_select"
-        )
-        write_mode = _WRITE_MODE_LABELS[write_mode_label]
-        if write_mode == "overwrite_row":
-            field_names = list(field_descriptions.keys())
-            if field_names:
-                key_field = st.selectbox("Trường dùng làm khoá", field_names, key="schedule_key_field_select")
-            else:
-                st.info("Khai báo ít nhất 1 field ở trên để chọn trường khoá.")
 
     st.markdown("**Tần suất chạy**")
     freq_mode = st.selectbox(
@@ -1014,11 +964,7 @@ def _render_step5() -> None:
             st.warning("Cần khai báo ít nhất 1 field có đủ tên và mô tả.")
         elif missing:
             st.warning("Cần mô tả cho field: " + ", ".join(missing))
-        elif is_schedule_file_mode and not sched_file_name.strip():
-            st.warning("Cần nhập tên file.")
-        elif is_schedule_file_mode and write_mode == "overwrite_row" and not key_field:
-            st.warning("Cần chọn trường khoá cho cách ghi 'Ghi đè theo trường'.")
-        elif not is_schedule_file_mode and chosen_dataset is None:
+        elif chosen_dataset is None:
             st.warning("Cần chọn 1 dataset.")
         else:
             body: dict[str, Any] = {
@@ -1028,20 +974,11 @@ def _render_step5() -> None:
                 "trigger_args": trigger_args,
                 "image_fields": schedule_image_fields,
             }
-            if is_schedule_file_mode:
-                body["storage_mode"] = "file"
-                body["file_path"] = file_path.strip()
-                body["write_mode"] = write_mode
-                if write_mode == "overwrite_row":
-                    body["key_field"] = key_field
-            else:
-                body["dataset_id"] = chosen_dataset["dataset_id"]
+            body["dataset_id"] = chosen_dataset["dataset_id"]
 
             result = _api_post("/schedules", body)
             if result is not None and not result.get("_http_error"):
                 st.success("Đã tạo lịch tự động.")
-                if is_schedule_file_mode:
-                    st.session_state.schedule_fields = [{"name": "", "desc": ""}]
                 st.rerun()
             elif result is not None:
                 st.error(f"Lỗi tạo lịch: {result['detail']}")

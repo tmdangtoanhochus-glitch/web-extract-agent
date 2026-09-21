@@ -231,6 +231,11 @@ class GreenNodeChatClient(AIClient):
         thêm 1.5 lần."""
         ratio = min(len(chunk) / _MAX_CHUNK_CHARS, 1.0) if _MAX_CHUNK_CHARS else 1.0
         scaled = max(self._timeout_seconds, self._timeout_seconds * (1.0 + 3.0 * ratio))
+        # Bảng dày (nhiều dòng, ít ký tự/dòng) vẫn sinh nhiều bản ghi: trang
+        # data.vietnambiz.vn/macro-economic chỉ 2.643 ký tự nhưng 25 bản ghi, model
+        # mất 57s và có lần >90s (2026-09-21, GLM-5.3-flash) — công thức theo độ dài
+        # cho 60s rồi 90s nên timeout. Ước lượng thêm theo số dòng bản ghi.
+        scaled = max(scaled, min(_SECONDS_BASE + _SECONDS_PER_ROW * _count_record_rows(chunk), _MAX_ROW_TIMEOUT))
         return scaled * 1.5 if attempt >= 2 else scaled
 
     def _extract_chunk(
@@ -389,6 +394,26 @@ def _warn_if_base_url_missing_v1_suffix(base_url: str) -> None:
             "thật yêu cầu dạng 'https://<host>/v1'. Kiểm tra lại nếu request bị 404.",
             base_url,
         )
+
+
+_SECONDS_BASE = 15.0
+_SECONDS_PER_ROW = 4.0
+_MAX_ROW_TIMEOUT = 240.0
+
+
+def _count_record_rows(chunk: str) -> int:
+    """Số dòng có khả năng là 1 bản ghi (dòng bảng markdown hoặc mục danh sách),
+    không tính dòng tiêu đề/ngăn cách của bảng."""
+    rows = 0
+    for line in chunk.splitlines():
+        s = line.strip()
+        if s.startswith("|"):
+            if set(s) <= set("|-: "):
+                continue
+            rows += 1
+        elif s.startswith(("- ", "* ")) or (s[:1].isdigit() and ". " in s[:5]):
+            rows += 1
+    return rows
 
 
 _MAX_CHUNK_CHARS = 8000
